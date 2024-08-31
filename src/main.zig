@@ -8,10 +8,11 @@ const Instruction = struct {
         },
         movRegToFromMem: struct {
             reg: RegisterId,
-            displacement: u16,
-            rm_lookup_key: u3,
-            d: bool,
+            displacement: [2]u8,
+            displacement_size: u8,
             displacement_only: bool,
+            d: bool,
+            rm_lookup_key: u3,
         },
         movImmToReg: struct {
             reg: RegisterId,
@@ -19,7 +20,8 @@ const Instruction = struct {
         },
         movImmToMem: struct {
             immediate: u16,
-            displacement: u16,
+            displacement: [2]u8,
+            displacement_size: u8,
             displacement_only: bool,
             rm_lookup_key: u3,
             w: u1,
@@ -107,16 +109,24 @@ const mov_effective_address_calculation_string: [8][]const u8 = .{
     "bx",
 };
 
-fn get_mem_label(buffer: []u8, displacement_only: bool, displacement: u16, rm_lookup_key: u3) std.fmt.BufPrintError![]u8 {
+fn get_mem_label(buffer: []u8, displacement_only: bool, displacement_size: u8, displacement_bytes: [2]u8, rm_lookup_key: u3) std.fmt.BufPrintError![]u8 {
     std.debug.assert(buffer.len >= 17);
     if (displacement_only) {
+        std.debug.assert(displacement_size == 2);
+        const displacement: u16 = @as(u16, displacement_bytes[0]) | (@as(u16, displacement_bytes[1]) << 8);
         return std.fmt.bufPrint(buffer, "[{d}]", .{displacement});
     } else {
         const mem_without_displacement = mov_effective_address_calculation_string[rm_lookup_key];
+        var displacement: i16 = if (displacement_size == 0) 0 else if (displacement_size == 1) @as(i16, @as(i8, @bitCast(displacement_bytes[0]))) else @as(i16, displacement_bytes[0]) | @as(i16, @bitCast(@as(u16, displacement_bytes[1]) << 8));
         if (displacement == 0) {
             return std.fmt.bufPrint(buffer, "[{s}]", .{mem_without_displacement});
         } else {
-            return std.fmt.bufPrint(buffer, "[{s} + {d}]", .{ mem_without_displacement, displacement });
+            std.debug.assert(displacement_size == 1 or displacement_size == 2);
+            const signed: bool = displacement < 0;
+            if (signed) {
+                displacement *= -1;
+            }
+            return std.fmt.bufPrint(buffer, "[{s} {s} {d}]", .{ mem_without_displacement, if (signed) "-" else "+", displacement });
         }
     }
 }
@@ -161,14 +171,17 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             } else {
                 // mod = 00, 01, or 10
                 const displacement_only = mod == 0b00 and rm == 0b110;
+                const displacement_size: u8 = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
                 var instruction: *Instruction = try instructions.addOne();
                 instruction.type = .{ .movRegToFromMem = .{
                     .reg = reg_id,
-                    .displacement = if (mod == 0b10 or displacement_only) data[i + 2] | (@as(u16, data[i + 3]) << 8) else if (mod == 0b01) @as(u16, data[i + 2]) else 0,
+                    .displacement_size = displacement_size,
+                    .displacement = undefined,
                     .rm_lookup_key = rm,
                     .d = d,
                     .displacement_only = displacement_only,
                 } };
+                @memcpy(instruction.type.movRegToFromMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
                 instruction.size = if (mod == 0b10 or displacement_only) 4 else if (mod == 0b01) 3 else 2;
                 i += instruction.size;
             }
@@ -198,8 +211,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 var instruction: *Instruction = try instructions.addOne();
                 instruction.type = .{ .movImmToMem = undefined };
                 instruction.type.movImmToMem.immediate = immediate;
-                instruction.type.movImmToMem.displacement = if (displacement_only or mod == 0b10) data[i + 2] | (@as(u16, data[i + 3]) << 8) else if (mod == 0b01) @as(u16, data[i + 2]) else 0;
+                @memcpy(instruction.type.movImmToMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
                 instruction.type.movImmToMem.displacement_only = displacement_only;
+                instruction.type.movImmToMem.displacement_size = displacement_size;
                 instruction.type.movImmToMem.rm_lookup_key = rm;
                 instruction.type.movImmToMem.w = w;
                 instruction.size = 3 + displacement_size + @as(u8, w);
@@ -209,16 +223,17 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             // mem to/from acc
             const d: bool = data[i] & 0b00000010 == 0;
             const w: u1 = @intCast(data[i] & 0b1);
-            const address: u16 = data[i + 1] | (@as(u16, data[i + 2]) << 8);
 
             var instruction: *Instruction = try instructions.addOne();
             instruction.type = .{ .movRegToFromMem = .{
                 .reg = if (w == 0) RegisterId.AL else RegisterId.AX,
-                .displacement = address,
+                .displacement = undefined,
+                .displacement_size = 2,
                 .rm_lookup_key = 0,
                 .d = d,
                 .displacement_only = true,
             } };
+            @memcpy(&instruction.type.movRegToFromMem.displacement, data[i + 1 .. i + 3]);
             instruction.size = 3;
             i += instruction.size;
         } else {
@@ -234,7 +249,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
         switch (instruction.type) {
             .movRegToFromMem => |d| {
                 var mem_label_buffer: [17]u8 = undefined;
-                const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement, d.rm_lookup_key);
+                const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
                 const reg_label = name(d.reg);
 
                 try writer.print("mov {s}, {s}\n", .{ if (d.d) reg_label else mem_label, if (d.d) mem_label else reg_label });
@@ -247,7 +262,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             },
             .movImmToMem => |d| {
                 var mem_label_buffer: [17]u8 = undefined;
-                const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement, d.rm_lookup_key);
+                const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
 
                 try writer.print("mov {s}, {s} {d}\n", .{ mem_label, if (d.w == 0) "byte" else "word", d.immediate });
             },
