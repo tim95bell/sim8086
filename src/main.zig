@@ -28,13 +28,28 @@ const ImmToMem = struct {
     w: u1,
 };
 
+const RegToFromRegMem = struct {
+    params: union(enum) {
+        regToFromReg: RegToFromReg,
+        regToFromMem: RegToFromMem,
+    },
+    size: u8,
+};
+
 const InstructionType = enum {
     mov,
+    add,
 };
 
 const Instruction = struct {
     type: union(InstructionType) {
         mov: union(enum) {
+            regToFromReg: RegToFromReg,
+            regToFromMem: RegToFromMem,
+            immToReg: ImmToReg,
+            immToMem: ImmToMem,
+        },
+        add: union(enum) {
             regToFromReg: RegToFromReg,
             regToFromMem: RegToFromMem,
             immToReg: ImmToReg,
@@ -157,10 +172,63 @@ fn printRegToFromMem(writer: std.fs.File.Writer, instruction_type: InstructionTy
     });
 }
 
+fn printRegToFromReg(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const RegToFromReg) !void {
+    try writer.print("{s} {s}, {s}\n", .{
+        getInstructionTypeString(instruction_type),
+        name(data.dst_reg),
+        name(data.src_reg),
+    });
+}
+
 fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
     return switch (instruction_type) {
-        .mov => "mov"
+        .mov => "mov",
+        .add => "add",
     };
+}
+
+fn extractModRegRm(data: u8) struct { u2, u3, u3 } {
+    return .{
+        @intCast(data >> 6),
+        @intCast((data >> 3) & 0b111),
+        @intCast(data & 0b111),
+    };
+}
+
+fn createRegToFromRegMem(d: bool, w: u1, mod: u2, reg: u3, rm: u3, displacement: [*]const u8) RegToFromRegMem {
+    const reg_id = regFieldEncoding(w, reg);
+    if (mod == 0b11) {
+        const rm_id = regFieldEncoding(w, rm);
+
+        return .{
+            .params = .{
+                .regToFromReg = .{
+                    .dst_reg = if (d) reg_id else rm_id,
+                    .src_reg = if (d) rm_id else reg_id,
+                },
+            },
+            .size = 2,
+        };
+    } else {
+        // mod = 00, 01, or 10
+        const displacement_only = mod == 0b00 and rm == 0b110;
+        const displacement_size: u8 = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
+        var result: RegToFromRegMem = .{
+            .params = .{
+                .regToFromMem = .{
+                    .reg = reg_id,
+                    .displacement_size = displacement_size,
+                    .displacement = undefined,
+                    .rm_lookup_key = rm,
+                    .d = d,
+                    .displacement_only = displacement_only,
+                },
+            },
+            .size = if (mod == 0b10 or displacement_only) @as(u8, 4) else if (mod == 0b01) @as(u8, 3) else @as(u8, 2),
+        };
+        @memcpy(result.params.regToFromMem.displacement[0..displacement_size], displacement[0..displacement_size]);
+        return result;
+    }
 }
 
 fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
@@ -183,46 +251,25 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             instruction.size = 2 + @as(u8, w);
             i += instruction.size;
         } else if ((data[i] & 0b11111100) == 0b10001000) {
+            // mov reg to/from reg/mem
             const d: bool = data[i] & 0b00000010 != 0;
             const w: u1 = @intCast(data[i] & 0b00000001);
 
-            const mod: u2 = @intCast((data[i + 1] & 0b11000000) >> 6);
-            const reg: u3 = @intCast((data[i + 1] & 0b00111000) >> 3);
-            const rm: u3 = @intCast(data[i + 1] & 0b00000111);
-            const reg_id = regFieldEncoding(w, reg);
-
-            if (mod == 0b11) {
-                const rm_id = regFieldEncoding(w, rm);
-
-                var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .mov = .{ .regToFromReg = undefined } };
-                instruction.type.mov.regToFromReg.dst_reg = if (d) reg_id else rm_id;
-                instruction.type.mov.regToFromReg.src_reg = if (d) rm_id else reg_id;
-                instruction.size = 2;
-                i += instruction.size;
-            } else {
-                // mod = 00, 01, or 10
-                const displacement_only = mod == 0b00 and rm == 0b110;
-                const displacement_size: u8 = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
-                var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .mov = .{ .regToFromMem = .{
-                    .reg = reg_id,
-                    .displacement_size = displacement_size,
-                    .displacement = undefined,
-                    .rm_lookup_key = rm,
-                    .d = d,
-                    .displacement_only = displacement_only,
-                } } };
-                @memcpy(instruction.type.mov.regToFromMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
-                instruction.size = if (mod == 0b10 or displacement_only) 4 else if (mod == 0b01) 3 else 2;
-                i += instruction.size;
-            }
+            const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+            const displacement: [*]const u8 = data.ptr + i + 2;
+            const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{ .mov = switch (params.params) {
+                .regToFromReg => |specific_params| .{ .regToFromReg = specific_params, },
+                .regToFromMem => |specific_params| .{ .regToFromMem = specific_params, },
+            } };
+            instruction.size = params.size;
+            i += instruction.size;
         } else if ((data[i] & 0b11111110) == 0b11000110) {
             // imm to reg/mem
             const w: u1 = @intCast(data[i] & 0b1);
-            const mod: u2 = @intCast((data[i + 1] & 0b11000000) >> 6);
-            std.debug.assert((data[i + 1] & 0b00111000) == 0);
-            const rm: u3 = @intCast(data[i + 1] & 0b00000111);
+            const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+            std.debug.assert(reg == 0);
 
             const displacement_only = mod == 0b00 and rm == 0b110;
             const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
@@ -268,6 +315,21 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             @memcpy(&instruction.type.mov.regToFromMem.displacement, data[i + 1 .. i + 3]);
             instruction.size = 3;
             i += instruction.size;
+        } else if ((data[i] & 0b11111100) == 0b00000000) {
+            // add reg/mem to/from reg
+            const d = (data[i] & 0b00000010) != 0;
+            const w: u1 = @intCast(data[i] & 0b00000001);
+            const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+            const displacement: [*]const u8 = data.ptr + i + 2;
+
+            var instruction: *Instruction = try instructions.addOne();
+            const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
+            instruction.type = .{ .add = switch (params.params) {
+                .regToFromReg => |specific_params| .{ .regToFromReg = specific_params, },
+                .regToFromMem => |specific_params| .{ .regToFromMem = specific_params, },
+            } };
+            instruction.size = params.size;
+            i += instruction.size;
         } else {
             var buffer: [256]u8 = undefined;
             const str = std.fmt.bufPrint(&buffer, "unknown instruction opcode 0b{b} at instruction index {} and byte index {}\n", .{ data[i], instructions.items.len, i }) catch {
@@ -285,7 +347,7 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                         try printRegToFromMem(writer, .mov, &d);
                     },
                     .regToFromReg => |d| {
-                        try writer.print("mov {s}, {s}\n", .{ name(d.dst_reg), name(d.src_reg) });
+                        try printRegToFromReg(writer, .mov, &d);
                     },
                     .immToReg => |d| {
                         try writer.print("mov {s}, {d}\n", .{ name(d.reg), d.immediate });
@@ -295,6 +357,24 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                         const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
 
                         try writer.print("mov {s}, {s} {d}\n", .{ mem_label, if (d.w == 0) "byte" else "word", d.immediate });
+                    },
+                }
+            },
+            .add => |args_kind| {
+                switch (args_kind) {
+                    .regToFromReg => |d| {
+                        try printRegToFromReg(writer, .add, &d);
+                    },
+                    .regToFromMem => |d| {
+                        try printRegToFromMem(writer, .add, &d);
+                    },
+                    .immToReg => |d| {
+                        _ = d;
+                        unreachable;
+                    },
+                    .immToMem => |d| {
+                        _ = d;
+                        unreachable;
                     },
                 }
             },
