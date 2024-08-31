@@ -1,7 +1,7 @@
 
 bits 16
 
-mov [bx - 12], byte 43
+mov byte [bx - 12], 43
 mov [bx - 256], byte 43
 mov [65535], byte 43
 

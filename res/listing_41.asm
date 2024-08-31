@@ -40,12 +40,12 @@ add [bp + si + 4], bh
 add [bp + di + 6], di
 
 ; imm to mem (size specifier on mem)
-;add byte [bx], 34
-;add word [bp + si + 1000], 29
+add byte [bx], 34
+add word [bp + si + 1000], 29
 
 ; mem to accumulator
 ;add ax, [bp]
-;add al, [bx + si]
+; add al, [bx + si]
 
 ; reg to accumulator
 ;add ax, bx

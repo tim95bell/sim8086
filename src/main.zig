@@ -36,6 +36,14 @@ const RegToFromRegMem = struct {
     size: u8,
 };
 
+const ImmToRegMem = struct {
+    params: union(enum) {
+        immToReg: ImmToReg,
+        immToMem: ImmToMem,
+    },
+    size: u8,
+};
+
 const InstructionType = enum {
     mov,
     add,
@@ -180,6 +188,22 @@ fn printRegToFromReg(writer: std.fs.File.Writer, instruction_type: InstructionTy
     });
 }
 
+fn printImmToReg(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const ImmToReg) !void {
+    try writer.print("{s} {s}, {d}\n", .{ getInstructionTypeString(instruction_type), name(data.reg), data.immediate });
+}
+
+fn printImmToMem(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const ImmToMem) !void {
+    var mem_label_buffer: [17]u8 = undefined;
+    const mem_label = try get_mem_label(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
+
+    try writer.print("{s} {s} {s}, {d}\n", .{
+        getInstructionTypeString(instruction_type),
+        if (data.w == 0) "byte" else "word",
+        mem_label,
+        data.immediate,
+    });
+}
+
 fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
     return switch (instruction_type) {
         .mov => "mov",
@@ -231,12 +255,50 @@ fn createRegToFromRegMem(d: bool, w: u1, mod: u2, reg: u3, rm: u3, displacement:
     }
 }
 
+fn createImmToRegMem(mod: u2, rm: u3, s: u1, w: u1, data: [*]const u8) ImmToRegMem {
+    const displacement_only = mod == 0b00 and rm == 0b110;
+    const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
+    const immediate_index_offset: u8 = 2 + displacement_size;
+    const immediate: u16 = if (s == 0 and w == 1) data[immediate_index_offset] | (@as(u16, data[immediate_index_offset + 1]) << 8) else data[immediate_index_offset];
+
+    if (mod == 0b11) {
+        // imm to reg
+        // TODO(TB): not sure how to test this
+        return .{
+            .params = .{
+                .immToReg = .{
+                    .reg = regFieldEncoding(w, rm),
+                    .immediate = immediate,
+                },
+            },
+            .size = 3 + @as(u8, w),
+        };
+    } else {
+        // imm to mem
+        var result: ImmToRegMem = .{
+            .params = .{
+                .immToMem = .{
+                    .immediate = immediate,
+                    .displacement_only = displacement_only,
+                    .displacement_size = displacement_size,
+                    .rm_lookup_key = rm,
+                    .w = w,
+                    .displacement = undefined,
+                },
+            },
+            .size = 3 + displacement_size + @as(u8, w),
+        };
+        @memcpy(result.params.immToMem.displacement[0..displacement_size], data[2..2 + displacement_size]);
+        return result;
+    }
+}
+
 fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
     var instructions = try std.ArrayList(Instruction).initCapacity(allocator, data.len / 2);
     defer instructions.deinit();
 
     var out = std.io.getStdOut();
-    var writer = out.writer();
+    const writer = out.writer();
     _ = try out.write("\nbits 16\n\n");
     var i: usize = 0;
 
@@ -266,38 +328,18 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             instruction.size = params.size;
             i += instruction.size;
         } else if ((data[i] & 0b11111110) == 0b11000110) {
-            // imm to reg/mem
+            // mov imm to reg/mem
             const w: u1 = @intCast(data[i] & 0b1);
             const mod, const reg, const rm = extractModRegRm(data[i + 1]);
             std.debug.assert(reg == 0);
-
-            const displacement_only = mod == 0b00 and rm == 0b110;
-            const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
-            const immediate_index_offset: u8 = 2 + displacement_size;
-            const immediate: u16 = if (w == 0) data[i + immediate_index_offset] else data[i + immediate_index_offset] | (@as(u16, data[i + immediate_index_offset + 1]) << 8);
-
-            if (mod == 0b11) {
-                // imm to reg
-                // TODO(TB): not sure how to test this
-                var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .mov = .{ .immToReg = undefined } };
-                instruction.type.mov.immToReg.reg = regFieldEncoding(w, rm);
-                instruction.type.mov.immToReg.immediate = immediate;
-                instruction.size = 3 + @as(u8, w);
-                i += instruction.size;
-            } else {
-                // imm to mem
-                var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .mov = .{ .immToMem = undefined } };
-                instruction.type.mov.immToMem.immediate = immediate;
-                @memcpy(instruction.type.mov.immToMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
-                instruction.type.mov.immToMem.displacement_only = displacement_only;
-                instruction.type.mov.immToMem.displacement_size = displacement_size;
-                instruction.type.mov.immToMem.rm_lookup_key = rm;
-                instruction.type.mov.immToMem.w = w;
-                instruction.size = 3 + displacement_size + @as(u8, w);
-                i += instruction.size;
-            }
+            const params = createImmToRegMem(mod, rm, 0, w, data[i..].ptr);
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{ .mov = switch (params.params) {
+                .immToReg => |specific_params| .{ .immToReg = specific_params, },
+                .immToMem => |specific_params| .{ .immToMem = specific_params, },
+            } };
+            instruction.size = params.size;
+            i += instruction.size;
         } else if ((data[i] & 0b11111100) == 0b10100000) {
             // mem to/from acc
             const d: bool = data[i] & 0b00000010 == 0;
@@ -330,6 +372,19 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             } };
             instruction.size = params.size;
             i += instruction.size;
+        } else if ((data[i] & 0b11111100) == 0b10000000) {
+            const s: u1 = @intCast((data[i] & 0b10) >> 1);
+            const w: u1 = @intCast(data[i] & 0b1);
+            const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+            std.debug.assert(reg == 0);
+            const params = createImmToRegMem(mod, rm, s, w, data[i..].ptr);
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{ .add = switch (params.params) {
+                .immToReg => |specific_params| .{ .immToReg = specific_params, },
+                .immToMem => |specific_params| .{ .immToMem = specific_params, },
+            } };
+            instruction.size = params.size;
+            i += instruction.size;
         } else {
             var buffer: [256]u8 = undefined;
             const str = std.fmt.bufPrint(&buffer, "unknown instruction opcode 0b{b} at instruction index {} and byte index {}\n", .{ data[i], instructions.items.len, i }) catch {
@@ -350,13 +405,10 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                         try printRegToFromReg(writer, .mov, &d);
                     },
                     .immToReg => |d| {
-                        try writer.print("mov {s}, {d}\n", .{ name(d.reg), d.immediate });
+                        try printImmToReg(writer, .mov, &d);
                     },
                     .immToMem => |d| {
-                        var mem_label_buffer: [17]u8 = undefined;
-                        const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
-
-                        try writer.print("mov {s}, {s} {d}\n", .{ mem_label, if (d.w == 0) "byte" else "word", d.immediate });
+                        try printImmToMem(writer, .mov, &d);
                     },
                 }
             },
@@ -369,12 +421,10 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                         try printRegToFromMem(writer, .add, &d);
                     },
                     .immToReg => |d| {
-                        _ = d;
-                        unreachable;
+                        try printImmToReg(writer, .add, &d);
                     },
                     .immToMem => |d| {
-                        _ = d;
-                        unreachable;
+                        try printImmToMem(writer, .add, &d);
                     },
                 }
             },
