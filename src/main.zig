@@ -176,6 +176,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             // imm to reg/mem
             const w: u1 = @intCast(data[i] & 0b1);
             const mod: u2 = @intCast((data[i + 1] & 0b11000000) >> 6);
+            std.debug.assert((data[i + 1] & 0b00111000) == 0);
             const rm: u3 = @intCast(data[i + 1] & 0b00000111);
 
             const displacement_only = mod == 0b00 and rm == 0b110;
@@ -204,6 +205,21 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 instruction.size = 3 + displacement_size + @as(u8, w);
                 i += instruction.size;
             }
+        } else if ((data[i] & 0b11111110) == 0b10100000) {
+            // mem to acc
+            const w: u1 = @intCast(data[i] & 0b1);
+            const address: u16 = data[i + 1] | (@as(u16, data[i + 2]) << 8);
+
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{ .movRegToFromMem = .{
+                .reg = if (w == 0) RegisterId.AL else RegisterId.AX,
+                .displacement = address,
+                .rm_lookup_key = 0,
+                .d = true,
+                .displacement_only = true,
+            } };
+            instruction.size = 3;
+            i += instruction.size;
         } else {
             var buffer: [256]u8 = undefined;
             const str = std.fmt.bufPrint(&buffer, "unknown instruction opcode 0b{b} at instruction index {} and byte index {}\n", .{ data[i], instructions.items.len, i }) catch {
