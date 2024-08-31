@@ -45,7 +45,7 @@ add word [bp + si + 1000], 29
 
 ; mem to accumulator
 ;add ax, [bp]
-; add al, [bx + si]
+;add al, [bx + si]
 
 ; reg to accumulator
 ;add ax, bx
