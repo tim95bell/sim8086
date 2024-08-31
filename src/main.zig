@@ -205,8 +205,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 instruction.size = 3 + displacement_size + @as(u8, w);
                 i += instruction.size;
             }
-        } else if ((data[i] & 0b11111110) == 0b10100000) {
-            // mem to acc
+        } else if ((data[i] & 0b11111100) == 0b10100000) {
+            // mem to/from acc
+            const d: bool = data[i] & 0b00000010 == 0;
             const w: u1 = @intCast(data[i] & 0b1);
             const address: u16 = data[i + 1] | (@as(u16, data[i + 2]) << 8);
 
@@ -215,7 +216,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 .reg = if (w == 0) RegisterId.AL else RegisterId.AX,
                 .displacement = address,
                 .rm_lookup_key = 0,
-                .d = true,
+                .d = d,
                 .displacement_only = true,
             } };
             instruction.size = 3;
