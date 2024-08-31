@@ -1,30 +1,44 @@
 const std = @import("std");
 
+const RegToFromReg = struct {
+    dst_reg: RegisterId,
+    src_reg: RegisterId,
+};
+
+const RegToFromMem = struct {
+    reg: RegisterId,
+    displacement: [2]u8,
+    displacement_size: u8,
+    displacement_only: bool,
+    d: bool,
+    rm_lookup_key: u3,
+};
+
+const ImmToReg = struct {
+    reg: RegisterId,
+    immediate: u16,
+};
+
+const ImmToMem = struct {
+    immediate: u16,
+    displacement: [2]u8,
+    displacement_size: u8,
+    displacement_only: bool,
+    rm_lookup_key: u3,
+    w: u1,
+};
+
+const InstructionType = enum {
+    mov,
+};
+
 const Instruction = struct {
-    type: union(enum) {
-        movRegToFromReg: struct {
-            dst_reg: RegisterId,
-            src_reg: RegisterId,
-        },
-        movRegToFromMem: struct {
-            reg: RegisterId,
-            displacement: [2]u8,
-            displacement_size: u8,
-            displacement_only: bool,
-            d: bool,
-            rm_lookup_key: u3,
-        },
-        movImmToReg: struct {
-            reg: RegisterId,
-            immediate: u16,
-        },
-        movImmToMem: struct {
-            immediate: u16,
-            displacement: [2]u8,
-            displacement_size: u8,
-            displacement_only: bool,
-            rm_lookup_key: u3,
-            w: u1,
+    type: union(InstructionType) {
+        mov: union(enum) {
+            regToFromReg: RegToFromReg,
+            regToFromMem: RegToFromMem,
+            immToReg: ImmToReg,
+            immToMem: ImmToMem,
         },
     },
     size: u8,
@@ -131,7 +145,25 @@ fn get_mem_label(buffer: []u8, displacement_only: bool, displacement_size: u8, d
     }
 }
 
-pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
+fn printRegToFromMem(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const RegToFromMem) !void {
+    var mem_label_buffer: [17]u8 = undefined;
+    const mem_label = try get_mem_label(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
+    const reg_label = name(data.reg);
+
+    try writer.print("{s} {s}, {s}\n", .{
+        getInstructionTypeString(instruction_type),
+        if (data.d) reg_label else mem_label,
+        if (data.d) mem_label else reg_label
+    });
+}
+
+fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
+    return switch (instruction_type) {
+        .mov => "mov"
+    };
+}
+
+fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
     var instructions = try std.ArrayList(Instruction).initCapacity(allocator, data.len / 2);
     defer instructions.deinit();
 
@@ -145,9 +177,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             // mov imm to reg
             const w: u1 = @intCast((data[i] & 0b00001000) >> 3);
             var instruction: *Instruction = try instructions.addOne();
-            instruction.type = .{ .movImmToReg = undefined };
-            instruction.type.movImmToReg.reg = regFieldEncoding(w, @intCast(data[i] & 0b00000111));
-            instruction.type.movImmToReg.immediate = if (w == 0) data[i + 1] else data[i + 1] | (@as(u16, data[i + 2]) << 8);
+            instruction.type = .{ .mov = .{ .immToReg = undefined } };
+            instruction.type.mov.immToReg.reg = regFieldEncoding(w, @intCast(data[i] & 0b00000111));
+            instruction.type.mov.immToReg.immediate = if (w == 0) data[i + 1] else data[i + 1] | (@as(u16, data[i + 2]) << 8);
             instruction.size = 2 + @as(u8, w);
             i += instruction.size;
         } else if ((data[i] & 0b11111100) == 0b10001000) {
@@ -163,9 +195,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 const rm_id = regFieldEncoding(w, rm);
 
                 var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .movRegToFromReg = undefined };
-                instruction.type.movRegToFromReg.dst_reg = if (d) reg_id else rm_id;
-                instruction.type.movRegToFromReg.src_reg = if (d) rm_id else reg_id;
+                instruction.type = .{ .mov = .{ .regToFromReg = undefined } };
+                instruction.type.mov.regToFromReg.dst_reg = if (d) reg_id else rm_id;
+                instruction.type.mov.regToFromReg.src_reg = if (d) rm_id else reg_id;
                 instruction.size = 2;
                 i += instruction.size;
             } else {
@@ -173,15 +205,15 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 const displacement_only = mod == 0b00 and rm == 0b110;
                 const displacement_size: u8 = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
                 var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .movRegToFromMem = .{
+                instruction.type = .{ .mov = .{ .regToFromMem = .{
                     .reg = reg_id,
                     .displacement_size = displacement_size,
                     .displacement = undefined,
                     .rm_lookup_key = rm,
                     .d = d,
                     .displacement_only = displacement_only,
-                } };
-                @memcpy(instruction.type.movRegToFromMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
+                } } };
+                @memcpy(instruction.type.mov.regToFromMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
                 instruction.size = if (mod == 0b10 or displacement_only) 4 else if (mod == 0b01) 3 else 2;
                 i += instruction.size;
             }
@@ -201,21 +233,21 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                 // imm to reg
                 // TODO(TB): not sure how to test this
                 var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .movImmToReg = undefined };
-                instruction.type.movImmToReg.reg = regFieldEncoding(w, rm);
-                instruction.type.movImmToReg.immediate = immediate;
+                instruction.type = .{ .mov = .{ .immToReg = undefined } };
+                instruction.type.mov.immToReg.reg = regFieldEncoding(w, rm);
+                instruction.type.mov.immToReg.immediate = immediate;
                 instruction.size = 3 + @as(u8, w);
                 i += instruction.size;
             } else {
                 // imm to mem
                 var instruction: *Instruction = try instructions.addOne();
-                instruction.type = .{ .movImmToMem = undefined };
-                instruction.type.movImmToMem.immediate = immediate;
-                @memcpy(instruction.type.movImmToMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
-                instruction.type.movImmToMem.displacement_only = displacement_only;
-                instruction.type.movImmToMem.displacement_size = displacement_size;
-                instruction.type.movImmToMem.rm_lookup_key = rm;
-                instruction.type.movImmToMem.w = w;
+                instruction.type = .{ .mov = .{ .immToMem = undefined } };
+                instruction.type.mov.immToMem.immediate = immediate;
+                @memcpy(instruction.type.mov.immToMem.displacement[0..displacement_size], data[i + 2 .. i + 2 + displacement_size]);
+                instruction.type.mov.immToMem.displacement_only = displacement_only;
+                instruction.type.mov.immToMem.displacement_size = displacement_size;
+                instruction.type.mov.immToMem.rm_lookup_key = rm;
+                instruction.type.mov.immToMem.w = w;
                 instruction.size = 3 + displacement_size + @as(u8, w);
                 i += instruction.size;
             }
@@ -225,15 +257,15 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             const w: u1 = @intCast(data[i] & 0b1);
 
             var instruction: *Instruction = try instructions.addOne();
-            instruction.type = .{ .movRegToFromMem = .{
+            instruction.type = .{ .mov = .{ .regToFromMem = .{
                 .reg = if (w == 0) RegisterId.AL else RegisterId.AX,
                 .displacement = undefined,
                 .displacement_size = 2,
                 .rm_lookup_key = 0,
                 .d = d,
                 .displacement_only = true,
-            } };
-            @memcpy(&instruction.type.movRegToFromMem.displacement, data[i + 1 .. i + 3]);
+            } } };
+            @memcpy(&instruction.type.mov.regToFromMem.displacement, data[i + 1 .. i + 3]);
             instruction.size = 3;
             i += instruction.size;
         } else {
@@ -247,24 +279,24 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
 
     for (instructions.items) |instruction| {
         switch (instruction.type) {
-            .movRegToFromMem => |d| {
-                var mem_label_buffer: [17]u8 = undefined;
-                const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
-                const reg_label = name(d.reg);
+            .mov => |args_kind| {
+                switch (args_kind) {
+                    .regToFromMem => |d| {
+                        try printRegToFromMem(writer, .mov, &d);
+                    },
+                    .regToFromReg => |d| {
+                        try writer.print("mov {s}, {s}\n", .{ name(d.dst_reg), name(d.src_reg) });
+                    },
+                    .immToReg => |d| {
+                        try writer.print("mov {s}, {d}\n", .{ name(d.reg), d.immediate });
+                    },
+                    .immToMem => |d| {
+                        var mem_label_buffer: [17]u8 = undefined;
+                        const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
 
-                try writer.print("mov {s}, {s}\n", .{ if (d.d) reg_label else mem_label, if (d.d) mem_label else reg_label });
-            },
-            .movRegToFromReg => |d| {
-                try writer.print("mov {s}, {s}\n", .{ name(d.dst_reg), name(d.src_reg) });
-            },
-            .movImmToReg => |d| {
-                try writer.print("mov {s}, {d}\n", .{ name(d.reg), d.immediate });
-            },
-            .movImmToMem => |d| {
-                var mem_label_buffer: [17]u8 = undefined;
-                const mem_label = try get_mem_label(&mem_label_buffer, d.displacement_only, d.displacement_size, d.displacement, d.rm_lookup_key);
-
-                try writer.print("mov {s}, {s} {d}\n", .{ mem_label, if (d.w == 0) "byte" else "word", d.immediate });
+                        try writer.print("mov {s}, {s} {d}\n", .{ mem_label, if (d.w == 0) "byte" else "word", d.immediate });
+                    },
+                }
             },
         }
     }
