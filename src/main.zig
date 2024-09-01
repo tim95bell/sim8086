@@ -69,9 +69,10 @@ const InstructionType = enum {
     jnp,
     jno,
     jns,
-    // loopz,
-    // loopnz,
-    // jcxz,
+    loop,
+    loopz,
+    loopnz,
+    jcxz,
 };
 
 const Instruction = struct {
@@ -116,6 +117,10 @@ const Instruction = struct {
         jnp: JumpData,
         jno: JumpData,
         jns: JumpData,
+        loop: JumpData,
+        loopz: JumpData,
+        loopnz: JumpData,
+        jcxz: JumpData,
     },
     size: u8,
 };
@@ -275,6 +280,10 @@ fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
         .jnp => "jnp",
         .jno => "jno",
         .jns => "jns",
+        .loop => "loop",
+        .loopz => "loopz",
+        .loopnz => "loopnz",
+        .jcxz => "jcxz",
     };
 }
 
@@ -655,6 +664,22 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(i)) + jump_data.ip_inc8)) + instruction.size;
             try insertSortedSetArrayList(&labels, jump_byte);
             i += instruction.size;
+        } else if ((data[i] & 0b11111100) == 0b11100000) {
+            // loop, loopz, loopnz, jcxz
+            var instruction: *Instruction = try instructions.addOne();
+            const jump_data = .{ .ip_inc8 = @as(i8, @bitCast(data[i + 1])) };
+            instruction.type = switch (data[i] & 0b00000011) {
+                0b10 => .{ .loop = jump_data },
+                0b01 => .{ .loopz = jump_data },
+                0b00 => .{ .loopnz = jump_data },
+                0b11 => .{ .jcxz = jump_data },
+                else => unreachable,
+            };
+            instruction.size = 2;
+            // TODO(TB): consider overflow
+            const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(i)) + jump_data.ip_inc8)) + instruction.size;
+            try insertSortedSetArrayList(&labels, jump_byte);
+            i += instruction.size;
         } else {
             var buffer: [256]u8 = undefined;
             const str = std.fmt.bufPrint(&buffer, "unknown instruction opcode 0b{b} at instruction index {} and byte index {}\n", .{ data[i], instructions.items.len, i }) catch {
@@ -734,7 +759,9 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                     },
                 }
             },
-            .jnz, .je, .jl, .jle, .jb, .jbe, .jp, .jo, .js, .jnl, .jg, .jnb, .ja, .jnp, .jno, .jns => |args| {
+            .jnz, .je, .jl, .jle, .jb, .jbe, .jp, .jo, .js,
+            .jnl, .jg, .jnb, .ja, .jnp, .jno, .jns, .loop,
+            .loopz, .loopnz, .jcxz => |args| {
                try printJump(writer, instruction.type, byte_index, args, instruction.size, labels);
             },
         }

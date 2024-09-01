@@ -164,7 +164,7 @@ ja label
 jnp label
 jno label
 jns label
-;loop label
-;loopz label
-;loopnz label
-;jcxz label
+loop label
+loopz label
+loopnz label
+jcxz label
