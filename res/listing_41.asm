@@ -59,85 +59,85 @@ add al, 9
 
 ; -------- sub
 ; mem to reg
-;sub bx, [bx+si]
-;sub bx, [bp]
+sub bx, [bx+si]
+sub bx, [bp]
 
 ; imm to reg
-;sub si, 2
-;sub bp, 2
-;sub cx, 8
+sub si, 2
+sub bp, 2
+sub cx, 8
 
 ; mem to reg
-;sub bx, [bp + 0]
-;sub cx, [bx + 2]
-;sub bh, [bp + si + 4]
-;sub di, [bp + di + 6]
+sub bx, [bp + 0]
+sub cx, [bx + 2]
+sub bh, [bp + si + 4]
+sub di, [bp + di + 6]
 
 ; reg to mem
-;sub [bx+si], bx
-;sub [bp], bx
-;sub [bp + 0], bx
-;sub [bx + 2], cx
-;sub [bp + si + 4], bh
-;sub [bp + di + 6], di
+sub [bx+si], bx
+sub [bp], bx
+sub [bp + 0], bx
+sub [bx + 2], cx
+sub [bp + si + 4], bh
+sub [bp + di + 6], di
 
 ; imm to mem (size specifier on mem)
-;sub byte [bx], 34
-;sub word [bx + di], 29
+sub byte [bx], 34
+sub word [bx + di], 29
 
 ; mem to accumulator
-;sub ax, [bp]
-;sub al, [bx + si]
+sub ax, [bp]
+sub al, [bx + si]
 
 ; reg to accumulator
-;sub ax, bx
-;sub al, ah
+sub ax, bx
+sub al, ah
 
 ; imm to accumulator
-;sub ax, 1000
-;sub al, -30
-;sub al, 9
+sub ax, 1000
+sub al, -30
+sub al, 9
 
 ; -------- cmp
 ; mem to reg
-;cmp bx, [bx+si]
-;cmp bx, [bp]
+cmp bx, [bx+si]
+cmp bx, [bp]
 
 ; imm to reg
-;cmp si, 2
-;cmp bp, 2
-;cmp cx, 8
+cmp si, 2
+cmp bp, 2
+cmp cx, 8
 
 ; mem to reg
-;cmp bx, [bp + 0]
-;cmp cx, [bx + 2]
-;cmp bh, [bp + si + 4]
-;cmp di, [bp + di + 6]
+cmp bx, [bp + 0]
+cmp cx, [bx + 2]
+cmp bh, [bp + si + 4]
+cmp di, [bp + di + 6]
 
 ; reg to mem
-;cmp [bx+si], bx
-;cmp [bp], bx
-;cmp [bp + 0], bx
-;cmp [bx + 2], cx
-;cmp [bp + si + 4], bh
-;cmp [bp + di + 6], di
+cmp [bx+si], bx
+cmp [bp], bx
+cmp [bp + 0], bx
+cmp [bx + 2], cx
+cmp [bp + si + 4], bh
+cmp [bp + di + 6], di
 
 ; imm to mem (size specifier on mem)
-;cmp byte [bx], 34
-;cmp word [4834], 29
+cmp byte [bx], 34
+cmp word [4834], 29
 
 ; mem to accumulator
-;cmp ax, [bp]
-;cmp al, [bx + si]
+cmp ax, [bp]
+cmp al, [bx + si]
 
 ; reg to accumulator
-;cmp ax, bx
-;cmp al, ah
+cmp ax, bx
+cmp al, ah
 
 ; imm to accumulator
-;cmp ax, 1000
-;cmp al, -30
-;cmp al, 9
+cmp ax, 1000
+cmp al, -30
+cmp al, 9
 
 ; -------- jumps
 ;test_label0:

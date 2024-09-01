@@ -47,6 +47,8 @@ const ImmToRegMem = struct {
 const InstructionType = enum {
     mov,
     add,
+    sub,
+    cmp,
 };
 
 const Instruction = struct {
@@ -58,6 +60,18 @@ const Instruction = struct {
             immToMem: ImmToMem,
         },
         add: union(enum) {
+            regToFromReg: RegToFromReg,
+            regToFromMem: RegToFromMem,
+            immToReg: ImmToReg,
+            immToMem: ImmToMem,
+        },
+        sub: union(enum) {
+            regToFromReg: RegToFromReg,
+            regToFromMem: RegToFromMem,
+            immToReg: ImmToReg,
+            immToMem: ImmToMem,
+        },
+        cmp: union(enum) {
             regToFromReg: RegToFromReg,
             regToFromMem: RegToFromMem,
             immToReg: ImmToReg,
@@ -204,6 +218,8 @@ fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
     return switch (instruction_type) {
         .mov => "mov",
         .add => "add",
+        .sub => "sub",
+        .cmp => "cmp",
     };
 }
 
@@ -312,6 +328,7 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
     var i: usize = 0;
 
     while (i < data.len) {
+        //std.debug.print("parsing instruction={d}, byte={d}\n", .{instructions.items.len, i});
         if ((data[i] & 0b11110000) == 0b10110000) {
             // mov imm to reg
             const w: u1 = @intCast((data[i] & 0b00001000) >> 3);
@@ -394,21 +411,41 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             instruction.size = params.size;
             i += instruction.size;
         } else if ((data[i] & 0b11111100) == 0b10000000) {
-            // add imm to reg/mem
+            // add/sub/cmp imm to reg/mem
             const s: u1 = @intCast((data[i] & 0b10) >> 1);
             const w: u1 = @intCast(data[i] & 0b1);
             const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-            std.debug.assert(reg == 0b000);
+            std.debug.assert(reg == 0b000 or reg == 0b101 or reg == 0b111);
             const params = createImmToRegMem(mod, rm, s, w, data[i..].ptr);
             var instruction: *Instruction = try instructions.addOne();
-            instruction.type = .{ .add = switch (params.params) {
-                .immToReg => |specific_params| .{
-                    .immToReg = specific_params,
-                },
-                .immToMem => |specific_params| .{
-                    .immToMem = specific_params,
-                },
-            } };
+            if (reg == 0b000) {
+                instruction.type = .{ .add = switch (params.params) {
+                    .immToReg => |specific_params| .{
+                        .immToReg = specific_params,
+                    },
+                    .immToMem => |specific_params| .{
+                        .immToMem = specific_params,
+                    },
+                } };
+            } else if (reg == 0b101) {
+                instruction.type = .{ .sub = switch (params.params) {
+                    .immToReg => |specific_params| .{
+                        .immToReg = specific_params,
+                    },
+                    .immToMem => |specific_params| .{
+                        .immToMem = specific_params,
+                    },
+                } };
+            } else if (reg == 0b111) {
+                instruction.type = .{ .cmp = switch (params.params) {
+                    .immToReg => |specific_params| .{
+                        .immToReg = specific_params,
+                    },
+                    .immToMem => |specific_params| .{
+                        .immToMem = specific_params,
+                    },
+                } };
+            }
             instruction.size = params.size;
             i += instruction.size;
         } else if ((data[i] & 0b11111110) == 0b00000100) {
@@ -419,6 +456,70 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             var instruction: *Instruction = try instructions.addOne();
             instruction.type = .{
                 .add = .{ .immToReg = .{
+                    .immediate = imm,
+                    .reg = getAccRegId(w),
+                } },
+            };
+            instruction.size = if (w) 3 else 2;
+            i += instruction.size;
+        } else if ((data[i] & 0b11111100) == 0b00101000) {
+            // sub reg/mem to/from reg
+            const d = (data[i] & 0b00000010) != 0;
+            const w: u1 = @intCast(data[i] & 0b00000001);
+            const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+            const displacement: [*]const u8 = data.ptr + i + 2;
+
+            var instruction: *Instruction = try instructions.addOne();
+            const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
+            instruction.type = .{ .sub = switch (params.params) {
+                .regToFromReg => |specific_params| .{
+                    .regToFromReg = specific_params,
+                },
+                .regToFromMem => |specific_params| .{
+                    .regToFromMem = specific_params,
+                },
+            } };
+            instruction.size = params.size;
+            i += instruction.size;
+        } else if ((data[i] & 0b11111110) == 0b00101100) {
+            // sub imm to acc
+            const w: bool = (data[i] & 0b1) != 0;
+            const imm: u16 = extractUnsignedWord(data.ptr + i + 1, w);
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{
+                .sub = .{ .immToReg = .{
+                    .immediate = imm,
+                    .reg = getAccRegId(w),
+                } },
+            };
+            instruction.size = if (w) 3 else 2;
+            i += instruction.size;
+        } else if ((data[i] & 0b11111100) == 0b00111000) {
+            // cmp reg/mem to/from reg
+            const d = (data[i] & 0b00000010) != 0;
+            const w: u1 = @intCast(data[i] & 0b00000001);
+            const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+            const displacement: [*]const u8 = data.ptr + i + 2;
+
+            var instruction: *Instruction = try instructions.addOne();
+            const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
+            instruction.type = .{ .cmp = switch (params.params) {
+                .regToFromReg => |specific_params| .{
+                    .regToFromReg = specific_params,
+                },
+                .regToFromMem => |specific_params| .{
+                    .regToFromMem = specific_params,
+                },
+            } };
+            instruction.size = params.size;
+            i += instruction.size;
+        } else if ((data[i] & 0b11111110) == 0b00111100) {
+            // cmp imm to acc
+            const w: bool = (data[i] & 0b1) != 0;
+            const imm: u16 = extractUnsignedWord(data.ptr + i + 1, w);
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{
+                .cmp = .{ .immToReg = .{
                     .immediate = imm,
                     .reg = getAccRegId(w),
                 } },
@@ -468,6 +569,38 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                     },
                 }
             },
+            .sub => |args_kind| {
+                switch (args_kind) {
+                    .regToFromReg => |d| {
+                        try printRegToFromReg(writer, .sub, &d);
+                    },
+                    .regToFromMem => |d| {
+                        try printRegToFromMem(writer, .sub, &d);
+                    },
+                    .immToReg => |d| {
+                        try printImmToReg(writer, .sub, &d);
+                    },
+                    .immToMem => |d| {
+                        try printImmToMem(writer, .sub, &d);
+                    },
+                }
+            },
+            .cmp => |args_kind| {
+                switch (args_kind) {
+                    .regToFromReg => |d| {
+                        try printRegToFromReg(writer, .cmp, &d);
+                    },
+                    .regToFromMem => |d| {
+                        try printRegToFromMem(writer, .cmp, &d);
+                    },
+                    .immToReg => |d| {
+                        try printImmToReg(writer, .cmp, &d);
+                    },
+                    .immToMem => |d| {
+                        try printImmToMem(writer, .cmp, &d);
+                    },
+                }
+            },
         }
     }
 }
@@ -482,5 +615,8 @@ pub fn main() !void {
     const file_name = args[1];
     const file = try std.fs.cwd().openFile(file_name, .{});
     const data = try file.readToEndAlloc(gpa, 1024 * 1024 * 1024);
+    //for (data) |b| {
+        //std.debug.print("- ${b}\n", .{b});
+    //}
     try decode(gpa, data);
 }
