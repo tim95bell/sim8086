@@ -267,7 +267,8 @@ fn createImmToRegMem(mod: u2, rm: u3, s: u1, w: u1, data: [*]const u8) ImmToRegM
     const displacement_only = mod == 0b00 and rm == 0b110;
     const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
     const immediate_index_offset: u8 = 2 + displacement_size;
-    const immediate: u16 = extractUnsignedWord(data + immediate_index_offset, s == 0 and w == 1);
+    const wide = s == 0 and w == 1;
+    const immediate: u16 = extractUnsignedWord(data + immediate_index_offset, wide);
 
     if (mod == 0b11) {
         // imm to reg
@@ -279,7 +280,7 @@ fn createImmToRegMem(mod: u2, rm: u3, s: u1, w: u1, data: [*]const u8) ImmToRegM
                     .immediate = immediate,
                 },
             },
-            .size = 3 + @as(u8, w),
+            .size = if (wide) 4 else 3,
         };
     } else {
         // imm to mem
@@ -294,7 +295,7 @@ fn createImmToRegMem(mod: u2, rm: u3, s: u1, w: u1, data: [*]const u8) ImmToRegM
                     .displacement = undefined,
                 },
             },
-            .size = 3 + displacement_size + @as(u8, w),
+            .size = displacement_size + @as(u8, if (wide) 4 else 3),
         };
         @memcpy(result.params.immToMem.displacement[0..displacement_size], data[2 .. 2 + displacement_size]);
         return result;
@@ -357,7 +358,7 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             instruction.size = params.size;
             i += instruction.size;
         } else if ((data[i] & 0b11111100) == 0b10100000) {
-            // mem to/from acc
+            // mov mem to/from acc
             const d: bool = data[i] & 0b00000010 == 0;
             const w: u1 = @intCast(data[i] & 0b1);
 
@@ -393,10 +394,11 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             instruction.size = params.size;
             i += instruction.size;
         } else if ((data[i] & 0b11111100) == 0b10000000) {
+            // add imm to reg/mem
             const s: u1 = @intCast((data[i] & 0b10) >> 1);
             const w: u1 = @intCast(data[i] & 0b1);
             const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-            std.debug.assert(reg == 0);
+            std.debug.assert(reg == 0b000);
             const params = createImmToRegMem(mod, rm, s, w, data[i..].ptr);
             var instruction: *Instruction = try instructions.addOne();
             instruction.type = .{ .add = switch (params.params) {
@@ -409,7 +411,7 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             } };
             instruction.size = params.size;
             i += instruction.size;
-        } else if ((data[i] & 0b11111110) == 0b00000010) {
+        } else if ((data[i] & 0b11111110) == 0b00000100) {
             // add imm to acc
             // TODO(TB): how to test this?
             const w: bool = (data[i] & 0b1) != 0;
