@@ -49,6 +49,7 @@ const InstructionType = enum {
     add,
     sub,
     cmp,
+    jnz,
 };
 
 const Instruction = struct {
@@ -76,6 +77,9 @@ const Instruction = struct {
             regToFromMem: RegToFromMem,
             immToReg: ImmToReg,
             immToMem: ImmToMem,
+        },
+        jnz: struct {
+            ip_inc8: i8,
         },
     },
     size: u8,
@@ -220,6 +224,7 @@ fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
         .add => "add",
         .sub => "sub",
         .cmp => "cmp",
+        .jnz => "jnz",
     };
 }
 
@@ -241,6 +246,41 @@ fn extractUnsignedWord(data: [*]const u8, wide: bool) u16 {
 
 fn getAccRegId(wide: bool) RegisterId {
     return if (wide) RegisterId.ax else RegisterId.al;
+}
+
+fn insertSortedSetArrayList(xs: *std.ArrayList(usize), y: usize) !void {
+    for (xs.items, 0..) |x, xs_index| {
+        if (x < y) {
+            continue;
+        } else if (x > y) {
+            try xs.insert(xs_index, y);
+            return;
+        } else if (x == y) {
+            return;
+        }
+    }
+
+    try xs.append(y);
+}
+
+fn findValueIndex(xs: std.ArrayList(usize), value: usize) ?usize {
+    for (xs.items, 0..) |x, i| {
+        if (x == value) {
+            return i;
+        }
+    }
+    return null;
+}
+
+fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *usize, labels: std.ArrayList(usize)) !void {
+    if (next_label_index.* < labels.items.len) {
+        const label_bytes = labels.items[next_label_index.*];
+        std.debug.assert(byte_index <= label_bytes);
+        if (byte_index == label_bytes) {
+            try writer.print("test_label{d}:\n", .{next_label_index.*});
+            next_label_index.* += 1;
+        }
+    }
 }
 
 fn createRegToFromRegMem(d: bool, w: u1, mod: u2, reg: u3, rm: u3, displacement: [*]const u8) RegToFromRegMem {
@@ -321,6 +361,9 @@ fn createImmToRegMem(mod: u2, rm: u3, s: u1, w: u1, data: [*]const u8) ImmToRegM
 fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
     var instructions = try std.ArrayList(Instruction).initCapacity(allocator, data.len / 2);
     defer instructions.deinit();
+
+    var labels = std.ArrayList(usize).init(allocator);
+    defer labels.deinit();
 
     var out = std.io.getStdOut();
     const writer = out.writer();
@@ -526,6 +569,19 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             };
             instruction.size = if (w) 3 else 2;
             i += instruction.size;
+        } else if ((data[i]) == 0b01110101) {
+            // jnz
+            var instruction: *Instruction = try instructions.addOne();
+            instruction.type = .{
+                .jnz = .{
+                    .ip_inc8 = @bitCast(data[i + 1]),
+                },
+            };
+            instruction.size = 2;
+            // TODO(TB): consider overflow
+            const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(i)) + instruction.type.jnz.ip_inc8)) + instruction.size;
+            try insertSortedSetArrayList(&labels, jump_byte);
+            i += instruction.size;
         } else {
             var buffer: [256]u8 = undefined;
             const str = std.fmt.bufPrint(&buffer, "unknown instruction opcode 0b{b} at instruction index {} and byte index {}\n", .{ data[i], instructions.items.len, i }) catch {
@@ -535,7 +591,11 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
         }
     }
 
+    var byte_index: usize = 0;
+    var next_label_index: usize = 0;
     for (instructions.items) |instruction| {
+        try printLabel(writer, byte_index, &next_label_index, labels);
+
         switch (instruction.type) {
             .mov => |args_kind| {
                 switch (args_kind) {
@@ -601,8 +661,17 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                     },
                 }
             },
+            .jnz => |args| {
+                // TODO(TB): consider overflow
+                // TODO(TB): jump offset is from end of jump instruction?
+                const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + args.ip_inc8)) + instruction.size;
+                const index: usize = findValueIndex(labels, label_byte_index).?;
+                try writer.print("jnz test_label{d}\n", .{index});
+            },
         }
+        byte_index += instruction.size;
     }
+    try printLabel(writer, byte_index, &next_label_index, labels);
 }
 
 pub fn main() !void {

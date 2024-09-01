@@ -140,13 +140,13 @@ cmp al, -30
 cmp al, 9
 
 ; -------- jumps
-;test_label0:
-;jnz test_label1
-;jnz test_label0
-;test_label1:
-;jnz test_label0
-;jnz test_label1
-;
+test_label0:
+jnz test_label1
+jnz test_label0
+test_label1:
+jnz test_label0
+jnz test_label1
+
 ;label:
 ;je label
 ;jl label
