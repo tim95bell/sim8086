@@ -44,12 +44,34 @@ const ImmToRegMem = struct {
     size: u8,
 };
 
+const JumpData = struct {
+    ip_inc8: i8,
+};
+
 const InstructionType = enum {
     mov,
     add,
     sub,
     cmp,
     jnz,
+    je,
+    jl,
+    jle,
+    jb,
+    jbe,
+    jp,
+    jo,
+    js,
+    jnl,
+    jg,
+    jnb,
+    ja,
+    jnp,
+    jno,
+    jns,
+    // loopz,
+    // loopnz,
+    // jcxz,
 };
 
 const Instruction = struct {
@@ -78,9 +100,22 @@ const Instruction = struct {
             immToReg: ImmToReg,
             immToMem: ImmToMem,
         },
-        jnz: struct {
-            ip_inc8: i8,
-        },
+        jnz: JumpData,
+        je: JumpData,
+        jl: JumpData,
+        jle: JumpData,
+        jb: JumpData,
+        jbe: JumpData,
+        jp: JumpData,
+        jo: JumpData,
+        js: JumpData,
+        jnl: JumpData,
+        jg: JumpData,
+        jnb: JumpData,
+        ja: JumpData,
+        jnp: JumpData,
+        jno: JumpData,
+        jns: JumpData,
     },
     size: u8,
 };
@@ -225,6 +260,21 @@ fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
         .sub => "sub",
         .cmp => "cmp",
         .jnz => "jnz",
+        .je => "je",
+        .jl => "jl",
+        .jle => "jle",
+        .jb => "jb",
+        .jbe => "jbe",
+        .jp => "jp",
+        .jo => "jo",
+        .js => "js",
+        .jnl => "jnl",
+        .jg => "jg",
+        .jnb => "jnb",
+        .ja => "ja",
+        .jnp => "jnp",
+        .jno => "jno",
+        .jns => "jns",
     };
 }
 
@@ -281,6 +331,14 @@ fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *
             next_label_index.* += 1;
         }
     }
+}
+
+fn printJump(writer: std.fs.File.Writer, instruction_type: InstructionType, byte_index: usize, data: JumpData, instruction_size: usize, labels: std.ArrayList(usize)) !void {
+    // TODO(TB): consider overflow
+    // TODO(TB): jump offset is from end of jump instruction?
+    const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + data.ip_inc8)) + instruction_size;
+    const index: usize = findValueIndex(labels, label_byte_index).?;
+    try writer.print("{s} test_label{d}\n", .{getInstructionTypeString(instruction_type), index});
 }
 
 fn createRegToFromRegMem(d: bool, w: u1, mod: u2, reg: u3, rm: u3, displacement: [*]const u8) RegToFromRegMem {
@@ -569,17 +627,32 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
             };
             instruction.size = if (w) 3 else 2;
             i += instruction.size;
-        } else if ((data[i]) == 0b01110101) {
-            // jnz
+        } else if ((data[i] & 0b11110000) == 0b01110000) {
+            // jnz, je, jnz, je, jl, jle, jb, jbe, jp, jo, js, jnl, jg, jnb, ja, jnp, jno, jns
             var instruction: *Instruction = try instructions.addOne();
-            instruction.type = .{
-                .jnz = .{
-                    .ip_inc8 = @bitCast(data[i + 1]),
-                },
+            const jump_data = .{ .ip_inc8 = @as(i8, @bitCast(data[i + 1])) };
+            instruction.type = switch (data[i] & 0b00001111) {
+                0b0101 => .{ .jnz = jump_data },
+                0b0100 => .{ .je = jump_data },
+                0b1100 => .{ .jl = jump_data },
+                0b1110 => .{ .jle = jump_data },
+                0b0010 => .{ .jb = jump_data },
+                0b0110 => .{ .jbe = jump_data },
+                0b1010 => .{ .jp = jump_data },
+                0b0000 => .{ .jo = jump_data },
+                0b1000 => .{ .js = jump_data },
+                0b1101 => .{ .jnl = jump_data },
+                0b1111 => .{ .jg = jump_data },
+                0b0011 => .{ .jnb = jump_data },
+                0b0111 => .{ .ja = jump_data },
+                0b1011 => .{ .jnp = jump_data },
+                0b0001 => .{ .jno = jump_data },
+                0b1001 => .{ .jns = jump_data },
+                else => unreachable,
             };
             instruction.size = 2;
             // TODO(TB): consider overflow
-            const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(i)) + instruction.type.jnz.ip_inc8)) + instruction.size;
+            const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(i)) + jump_data.ip_inc8)) + instruction.size;
             try insertSortedSetArrayList(&labels, jump_byte);
             i += instruction.size;
         } else {
@@ -661,12 +734,8 @@ fn decode(allocator: std.mem.Allocator, data: []const u8) anyerror!void {
                     },
                 }
             },
-            .jnz => |args| {
-                // TODO(TB): consider overflow
-                // TODO(TB): jump offset is from end of jump instruction?
-                const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + args.ip_inc8)) + instruction.size;
-                const index: usize = findValueIndex(labels, label_byte_index).?;
-                try writer.print("jnz test_label{d}\n", .{index});
+            .jnz, .je, .jl, .jle, .jb, .jbe, .jp, .jo, .js, .jnl, .jg, .jnb, .ja, .jnp, .jno, .jns => |args| {
+               try printJump(writer, instruction.type, byte_index, args, instruction.size, labels);
             },
         }
         byte_index += instruction.size;
