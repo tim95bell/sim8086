@@ -148,7 +148,7 @@ const RegisterId = enum {
     dx,
 };
 
-fn name(register_id: RegisterId) []const u8 {
+fn registerIdToLabel(register_id: RegisterId) []const u8 {
     return switch (register_id) {
         .ax => "ax",
         .bx => "bx",
@@ -204,7 +204,7 @@ const mov_effective_address_calculation_string: [8][]const u8 = .{
     "bx",
 };
 
-fn get_mem_label(buffer: []u8, displacement_only: bool, displacement_size: u8, displacement_bytes: [2]u8, rm_lookup_key: u3) std.fmt.BufPrintError![]u8 {
+fn getMemLabel(buffer: []u8, displacement_only: bool, displacement_size: u8, displacement_bytes: [2]u8, rm_lookup_key: u3) std.fmt.BufPrintError![]u8 {
     std.debug.assert(buffer.len >= 17);
     if (displacement_only) {
         std.debug.assert(displacement_size == 2);
@@ -228,8 +228,8 @@ fn get_mem_label(buffer: []u8, displacement_only: bool, displacement_size: u8, d
 
 fn printRegToFromMem(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const RegToFromMem) !void {
     var mem_label_buffer: [17]u8 = undefined;
-    const mem_label = try get_mem_label(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
-    const reg_label = name(data.reg);
+    const mem_label = try getMemLabel(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
+    const reg_label = registerIdToLabel(data.reg);
 
     try writer.print("{s} {s}, {s}\n", .{ getInstructionTypeString(instruction_type), if (data.d) reg_label else mem_label, if (data.d) mem_label else reg_label });
 }
@@ -237,18 +237,18 @@ fn printRegToFromMem(writer: std.fs.File.Writer, instruction_type: InstructionTy
 fn printRegToFromReg(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const RegToFromReg) !void {
     try writer.print("{s} {s}, {s}\n", .{
         getInstructionTypeString(instruction_type),
-        name(data.dst_reg),
-        name(data.src_reg),
+        registerIdToLabel(data.dst_reg),
+        registerIdToLabel(data.src_reg),
     });
 }
 
 fn printImmToReg(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const ImmToReg) !void {
-    try writer.print("{s} {s}, {d}\n", .{ getInstructionTypeString(instruction_type), name(data.reg), data.immediate });
+    try writer.print("{s} {s}, {d}\n", .{ getInstructionTypeString(instruction_type), registerIdToLabel(data.reg), data.immediate });
 }
 
 fn printImmToMem(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const ImmToMem) !void {
     var mem_label_buffer: [17]u8 = undefined;
-    const mem_label = try get_mem_label(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
+    const mem_label = try getMemLabel(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
 
     try writer.print("{s} {s} {s}, {d}\n", .{
         getInstructionTypeString(instruction_type),
