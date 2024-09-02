@@ -47,6 +47,7 @@ const Operand = struct {
     type: union(Type) {
         none: void,
         register: Register,
+        // TODO(TB): should there be immediate_8 and immediate_16?
         immediate: u16,
         memory: Memory,
         relative_jump_displacement: i8,
@@ -54,12 +55,31 @@ const Operand = struct {
 };
 
 const Register = struct {
+    const al: Register = .{ .index = .a, .offset = .none, .size = .byte };
+    const bl: Register = .{ .index = .b, .offset = .none, .size = .byte };
+    const cl: Register = .{ .index = .c, .offset = .none, .size = .byte };
+    const dl: Register = .{ .index = .d, .offset = .none, .size = .byte };
+    const ah: Register = .{ .index = .a, .offset = .byte, .size = .byte };
+    const bh: Register = .{ .index = .b, .offset = .byte, .size = .byte };
+    const ch: Register = .{ .index = .c, .offset = .byte, .size = .byte };
+    const dh: Register = .{ .index = .d, .offset = .byte, .size = .byte };
+    const ax: Register = .{ .index = .a, .offset = .none, .size = .word };
+    const bx: Register = .{ .index = .b, .offset = .none, .size = .word };
+    const cx: Register = .{ .index = .c, .offset = .none, .size = .word };
+    const dx: Register = .{ .index = .d, .offset = .none, .size = .word };
+    const sp: Register = .{ .index = .sp, .offset = .none, .size = .word };
+    const bp: Register = .{ .index = .bp, .offset = .none, .size = .word };
+    const si: Register = .{ .index = .si, .offset = .none, .size = .word };
+    const di: Register = .{ .index = .di, .offset = .none, .size = .word };
+    const none: Register = .{ .index = .none, .offset = .none, .size = .word };
+
     index: RegisterIndex,
     offset: RegisterOffset,
     size: RegisterSize,
 };
 
 const Memory = struct {
+    // TODO(TB): should displacement be stored sepertely for word and byte?
     displacement: i16,
     // TODO(TB): displacement_size shouldnt really be here
     displacement_size: u8,
@@ -102,6 +122,7 @@ fn getRegisterLabel(register: Register, buffer: []u8) []u8 {
     std.debug.assert(buffer.len >= 2);
     switch (register.index) {
         .a, .b, .c, .d => {
+            // TODO(TB): getGeneralPurposeRegisterLabelLetter is doing duplicated worrk here
             buffer[0] = getGeneralPurposeRegisterLabelLetter(register.index);
             if (register.offset == .none) {
                 if (register.size == .byte) {
@@ -139,24 +160,8 @@ fn getRegisterLabel(register: Register, buffer: []u8) []u8 {
     return buffer[0..2];
 }
 
-const al: Register = .{ .index = .a, .offset = .none, .size = .byte };
-const bl: Register = .{ .index = .b, .offset = .none, .size = .byte };
-const cl: Register = .{ .index = .c, .offset = .none, .size = .byte };
-const dl: Register = .{ .index = .d, .offset = .none, .size = .byte };
-const ah: Register = .{ .index = .a, .offset = .byte, .size = .byte };
-const bh: Register = .{ .index = .b, .offset = .byte, .size = .byte };
-const ch: Register = .{ .index = .c, .offset = .byte, .size = .byte };
-const dh: Register = .{ .index = .d, .offset = .byte, .size = .byte };
-const ax: Register = .{ .index = .a, .offset = .none, .size = .word };
-const bx: Register = .{ .index = .b, .offset = .none, .size = .word };
-const cx: Register = .{ .index = .c, .offset = .none, .size = .word };
-const dx: Register = .{ .index = .d, .offset = .none, .size = .word };
-const sp: Register = .{ .index = .sp, .offset = .none, .size = .word };
-const bp: Register = .{ .index = .bp, .offset = .none, .size = .word };
-const si: Register = .{ .index = .si, .offset = .none, .size = .word };
-const di: Register = .{ .index = .di, .offset = .none, .size = .word };
 const reg_field_encoding: [16]Register = .{
-    al, cl, dl, bl, ah, ch, dh, bh, ax, cx, dx, bx, sp, bp, si, di
+    Register.al, Register.cl, Register.dl, Register.bl, Register.ah, Register.ch, Register.dh, Register.bh, Register.ax, Register.cx, Register.dx, Register.bx, Register.sp, Register.bp, Register.si, Register.di
 };
 
 fn regFieldEncoding(w: u1, reg: u3) Register {
@@ -316,24 +321,24 @@ const Context = struct {
 
 fn decodeImmToReg(instruction_type: InstructionType, context: Context) Instruction {
     const w: u1 = @intCast((context.data[context.index] & 0b00001000) >> 3);
-    var instruction: Instruction = .{
+    return .{
         .address = @intCast(context.index),
         .type = instruction_type,
-        .operand = undefined,
+        .operand = .{
+            .{
+                .type = .{
+                    .register = regFieldEncoding(w, @intCast(context.data[context.index] & 0b00000111)),
+                },
+            },
+            .{
+                .type = .{
+                    .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, w != 0),
+                },
+            }
+        },
         .size = 2 + @as(u8, w),
         .wide = w != 0,
     };
-    instruction.operand[0] = .{
-        .type = .{
-            .register = regFieldEncoding(w, @intCast(context.data[context.index] & 0b00000111)),
-        },
-    };
-    instruction.operand[1] = .{
-        .type = .{
-            .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, w != 0),
-        },
-    };
-    return instruction;
 }
 
 fn decodeAddSubCmpRegToFromRegMem(context: Context) Instruction {
@@ -381,24 +386,28 @@ fn extractAddSubCmpType(bits: u3) InstructionType {
 
 fn decodeAddSubCmpImmToAcc(context: Context) Instruction {
     const wide: bool = (context.data[context.index] & 0b1) != 0;
-    var instruction: Instruction = .{
+    return .{
         .type = extractAddSubCmpType(@intCast((context.data[context.index] >> 3) & 0b00000111)),
         .address = @intCast(context.index),
-        .operand = undefined,
+        .operand = .{
+            .{
+                .type = .{
+                    .register = .{
+                        .index = .a,
+                        .offset = .none,
+                        .size = if (wide) .word else .byte,
+                    },
+                },
+            },
+            .{
+                .type = .{
+                    .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, wide),
+                },
+            },
+        },
         .size = if (wide) 3 else 2,
         .wide = wide,
     };
-    instruction.operand[0].type = .{
-        .register = .{
-            .index = .a,
-            .offset = .none,
-            .size = if (wide) .word else .byte,
-        },
-    };
-    instruction.operand[1].type = .{
-        .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, wide),
-    };
-    return instruction;
 }
 
 fn decodeAddSubCmpImmToRegMem(context: Context) Instruction {
@@ -454,12 +463,19 @@ fn createMem(mod: u2, rm: u3, displacement: [*]const u8) Memory {
     var result: Memory = .{
         .displacement = if (displacement_size > 0) extractSignedWord(displacement, displacement_size == 2) else 0,
         .displacement_size = displacement_size,
-        .reg = undefined,
+        .reg = .{
+            .{
+                .index = undefined,
+                .size = .word,
+                .offset = .none,
+            },
+            .{
+                .index = undefined,
+                .size = .word,
+                .offset = .none,
+            },
+        },
     };
-    result.reg[0].size = .word;
-    result.reg[0].offset = .none;
-    result.reg[1].size = .word;
-    result.reg[1].offset = .none;
     switch (rm) {
         0b000 => {
             result.reg[0].index = .b;
@@ -532,14 +548,15 @@ fn decode(context: Context) ?Instruction {
         };
         instruction.operand[mem_index].type = .{
             .memory = .{
-                .reg = undefined,
+                .reg = .{
+                    Register.none,
+                    Register.none,
+                },
                 // TODO(TB): displacement in this case should be unsigned?
                 .displacement = extractSignedWord(data.ptr + i + 1, true),
                 .displacement_size = 2,
             },
         };
-        instruction.operand[mem_index].type.memory.reg[0].index = .none;
-        instruction.operand[mem_index].type.memory.reg[1].index = .none;
         return instruction;
     } else if ((data[i] & 0b11000100) == 0b00000000) {
         // add/sub/cmp reg/mem to/from reg
@@ -552,7 +569,7 @@ fn decode(context: Context) ?Instruction {
         return decodeAddSubCmpImmToAcc(context);
     } else if ((data[i] & 0b11110000) == 0b01110000) {
         // jnz, je, jnz, je, jl, jle, jb, jbe, jp, jo, js, jnl, jg, jnb, ja, jnp, jno, jns
-        var instruction: Instruction = .{
+        return .{
             .type = switch (data[i] & 0b00001111) {
                 0b0101 => .jnz,
                 0b0100 => .je,
@@ -573,18 +590,18 @@ fn decode(context: Context) ?Instruction {
                 else => unreachable,
             },
             .address = @intCast(i),
-            .operand = undefined,
+            .operand = .{
+                .{ .type = .{
+                    .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
+                }},
+                .{ .type = .none },
+            },
             .size = 2,
             .wide = false,
         };
-        instruction.operand[0].type = .{
-            .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
-        };
-        instruction.operand[1].type = .none;
-        return instruction;
     } else if ((data[i] & 0b11111100) == 0b11100000) {
         // loop, loopz, loopnz, jcxz
-        var instruction: Instruction = .{
+        return .{
             .type = switch (data[i] & 0b00000011) {
                 0b10 => .loop,
                 0b01 => .loopz,
@@ -593,14 +610,15 @@ fn decode(context: Context) ?Instruction {
                 else => unreachable,
             },
             .address = @intCast(i),
-            .operand = undefined,
+            .operand = .{
+                .{ .type = .{
+                    .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
+                }},
+                .{ .type = .none },
+            },
             .size = 2,
             .wide = false,
         };
-        instruction.operand[0].type = .{
-            .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
-        };
-        return instruction;
     } else {
         return null;
     }
