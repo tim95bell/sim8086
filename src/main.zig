@@ -1,51 +1,11 @@
 const std = @import("std");
 
-const RegToFromReg = struct {
-    dst_reg: RegisterId,
-    src_reg: RegisterId,
-};
-
-const RegToFromMem = struct {
-    reg: RegisterId,
-    displacement: [2]u8,
-    displacement_size: u8,
-    displacement_only: bool,
-    d: bool,
-    rm_lookup_key: u3,
-};
-
-const ImmToReg = struct {
-    reg: RegisterId,
-    immediate: u16,
-};
-
-const ImmToMem = struct {
-    immediate: u16,
-    displacement: [2]u8,
-    displacement_size: u8,
-    displacement_only: bool,
-    rm_lookup_key: u3,
-    w: u1,
-};
-
-const RegToFromRegMem = struct {
-    params: union(enum) {
-        regToFromReg: RegToFromReg,
-        regToFromMem: RegToFromMem,
-    },
+const Instruction = struct {
+    address: u32,
+    type: InstructionType,
+    operand: [2]Operand,
     size: u8,
-};
-
-const ImmToRegMem = struct {
-    params: union(enum) {
-        immToReg: ImmToReg,
-        immToMem: ImmToMem,
-    },
-    size: u8,
-};
-
-const JumpData = struct {
-    ip_inc8: i8,
+    wide: bool,
 };
 
 const InstructionType = enum {
@@ -75,187 +35,188 @@ const InstructionType = enum {
     jcxz,
 };
 
-const Instruction = struct {
-    type: union(InstructionType) {
-        mov: union(enum) {
-            regToFromReg: RegToFromReg,
-            regToFromMem: RegToFromMem,
-            immToReg: ImmToReg,
-            immToMem: ImmToMem,
-        },
-        add: union(enum) {
-            regToFromReg: RegToFromReg,
-            regToFromMem: RegToFromMem,
-            immToReg: ImmToReg,
-            immToMem: ImmToMem,
-        },
-        sub: union(enum) {
-            regToFromReg: RegToFromReg,
-            regToFromMem: RegToFromMem,
-            immToReg: ImmToReg,
-            immToMem: ImmToMem,
-        },
-        cmp: union(enum) {
-            regToFromReg: RegToFromReg,
-            regToFromMem: RegToFromMem,
-            immToReg: ImmToReg,
-            immToMem: ImmToMem,
-        },
-        jnz: JumpData,
-        je: JumpData,
-        jl: JumpData,
-        jle: JumpData,
-        jb: JumpData,
-        jbe: JumpData,
-        jp: JumpData,
-        jo: JumpData,
-        js: JumpData,
-        jnl: JumpData,
-        jg: JumpData,
-        jnb: JumpData,
-        ja: JumpData,
-        jnp: JumpData,
-        jno: JumpData,
-        jns: JumpData,
-        loop: JumpData,
-        loopz: JumpData,
-        loopnz: JumpData,
-        jcxz: JumpData,
+const Operand = struct {
+    const Type = enum {
+        none,
+        register,
+        immediate,
+        memory,
+        relative_jump_displacement,
+    };
+
+    type: union(Type) {
+        none: void,
+        register: Register,
+        immediate: u16,
+        memory: Memory,
+        relative_jump_displacement: i8,
     },
-    size: u8,
 };
 
-const RegisterId = enum {
-    // 0b00xx => sp, bp, si, di
-    // 0b01xx => low a, b, c, or d
-    // 0b10xx => high a, b, c, or d
-    // 0b11xx => wide a, b, c, or d
+const Register = struct {
+    index: RegisterIndex,
+    offset: RegisterOffset,
+    size: RegisterSize,
+};
+
+const Memory = struct {
+    displacement: i16,
+    // TODO(TB): displacement_size shouldnt really be here
+    displacement_size: u8,
+    reg: [2]Register,
+};
+
+const RegisterIndex = enum {
+    a,
+    b,
+    c,
+    d,
     sp,
     bp,
     si,
     di,
-    al,
-    bl,
-    cl,
-    dl,
-    ah,
-    bh,
-    ch,
-    dh,
-    ax,
-    bx,
-    cx,
-    dx,
+    none,
 };
 
-fn registerIdToLabel(register_id: RegisterId) []const u8 {
-    return switch (register_id) {
-        .ax => "ax",
-        .bx => "bx",
-        .cx => "cx",
-        .dx => "dx",
-        .al => "al",
-        .bl => "bl",
-        .cl => "cl",
-        .dl => "dl",
-        .ah => "ah",
-        .bh => "bh",
-        .ch => "ch",
-        .dh => "dh",
-        .sp => "sp",
-        .bp => "bp",
-        .si => "si",
-        .di => "di",
+const RegisterOffset = enum(u8) {
+    none = 0,
+    byte = 1,
+};
+
+const RegisterSize = enum(u8) {
+    byte = 1,
+    word = 2,
+};
+
+fn getGeneralPurposeRegisterLabelLetter(reg: RegisterIndex) u8 {
+    return switch (reg) {
+        .a => 'a',
+        .b => 'b',
+        .c => 'c',
+        .d => 'd',
+        else => unreachable,
     };
 }
 
-fn regFieldEncoding(w: u1, reg: u3) RegisterId {
-    return reg_field_encoding[(@as(u4, w) << 3) | reg];
+fn getRegisterLabel(register: Register, buffer: []u8) []u8 {
+    std.debug.assert(buffer.len >= 2);
+    switch (register.index) {
+        .a, .b, .c, .d => {
+            buffer[0] = getGeneralPurposeRegisterLabelLetter(register.index);
+            if (register.offset == .none) {
+                if (register.size == .byte) {
+                    buffer[1] = 'l';
+                } else {
+                    std.debug.assert(register.size == .word);
+                    buffer[1] = 'x';
+                }
+            } else {
+                std.debug.assert(register.offset == .byte);
+                std.debug.assert(register.size == .byte);
+                buffer[1] = 'h';
+            }
+        },
+        .sp => {
+            buffer[0] = 's';
+            buffer[1] = 'p';
+        },
+        .bp => {
+            buffer[0] = 'b';
+            buffer[1] = 'p';
+        },
+        .si => {
+            buffer[0] = 's';
+            buffer[1] = 'i';
+        },
+        .di => {
+            buffer[0] = 'd';
+            buffer[1] = 'i';
+        },
+        .none => {
+            return buffer[0..0];
+        },
+    }
+    return buffer[0..2];
 }
 
-// access with 4 bit index: (w << 3) | reg
-const reg_field_encoding: [16]RegisterId = .{
-    .al,
-    .cl,
-    .dl,
-    .bl,
-    .ah,
-    .ch,
-    .dh,
-    .bh,
-    .ax,
-    .cx,
-    .dx,
-    .bx,
-    .sp,
-    .bp,
-    .si,
-    .di,
+const al: Register = .{ .index = .a, .offset = .none, .size = .byte };
+const bl: Register = .{ .index = .b, .offset = .none, .size = .byte };
+const cl: Register = .{ .index = .c, .offset = .none, .size = .byte };
+const dl: Register = .{ .index = .d, .offset = .none, .size = .byte };
+const ah: Register = .{ .index = .a, .offset = .byte, .size = .byte };
+const bh: Register = .{ .index = .b, .offset = .byte, .size = .byte };
+const ch: Register = .{ .index = .c, .offset = .byte, .size = .byte };
+const dh: Register = .{ .index = .d, .offset = .byte, .size = .byte };
+const ax: Register = .{ .index = .a, .offset = .none, .size = .word };
+const bx: Register = .{ .index = .b, .offset = .none, .size = .word };
+const cx: Register = .{ .index = .c, .offset = .none, .size = .word };
+const dx: Register = .{ .index = .d, .offset = .none, .size = .word };
+const sp: Register = .{ .index = .sp, .offset = .none, .size = .word };
+const bp: Register = .{ .index = .bp, .offset = .none, .size = .word };
+const si: Register = .{ .index = .si, .offset = .none, .size = .word };
+const di: Register = .{ .index = .di, .offset = .none, .size = .word };
+const reg_field_encoding: [16]Register = .{
+    al, cl, dl, bl, ah, ch, dh, bh, ax, cx, dx, bx, sp, bp, si, di
 };
 
-const mov_effective_address_calculation_string: [8][]const u8 = .{
-    "bx + si",
-    "bx + di",
-    "bp + si",
-    "bp + di",
-    "si",
-    "di",
-    "bp",
-    "bx",
-};
+fn regFieldEncoding(w: u1, reg: u3) Register {
+    return reg_field_encoding[@as(u4, w) << 3 | reg];
+}
 
-fn getMemLabel(buffer: []u8, displacement_only: bool, displacement_size: u8, displacement_bytes: [2]u8, rm_lookup_key: u3) std.fmt.BufPrintError![]u8 {
-    std.debug.assert(buffer.len >= 17);
-    if (displacement_only) {
-        std.debug.assert(displacement_size == 2);
-        const displacement: u16 = extractUnsignedWord(&displacement_bytes, true);
-        return std.fmt.bufPrint(buffer, "[{d}]", .{displacement});
-    } else {
-        const mem_without_displacement = mov_effective_address_calculation_string[rm_lookup_key];
-        var displacement: i16 = if (displacement_size == 0) 0 else extractSignedWord(&displacement_bytes, displacement_size == 2);
-        if (displacement == 0) {
-            return std.fmt.bufPrint(buffer, "[{s}]", .{mem_without_displacement});
-        } else {
-            std.debug.assert(displacement_size == 1 or displacement_size == 2);
-            const signed: bool = displacement < 0;
-            if (signed) {
-                displacement *= -1;
+fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
+    // TODO(TB): figure out the max length required here
+    std.debug.assert(buffer.len >= 32);
+    switch (operand.type) {
+        .register => |data| {
+            return getRegisterLabel(data, buffer);
+        },
+        .immediate => |data| {
+            return std.fmt.bufPrint(buffer, "{d}", .{data}) catch unreachable;
+        },
+        .memory => |data| {
+            if (data.reg[0].index == .none) {
+                std.debug.assert(data.reg[1].index == .none);
+                return std.fmt.bufPrint(buffer, "[{d}]", .{data.displacement}) catch unreachable;
+            } else if (data.reg[1].index == .none) {
+                var reg_label_buffer: [2]u8 = undefined;
+                if (data.displacement == 0) {
+                    // TODO(TB): is this legal? would it be signed then?
+                    return std.fmt.bufPrint(buffer, "[{s}]", .{getRegisterLabel(data.reg[0], &reg_label_buffer)}) catch unreachable;
+                } else {
+                    const negative = data.displacement < 0;
+                    return std.fmt.bufPrint(buffer, "[{s} {s} {d}]", .{
+                        getRegisterLabel(data.reg[0], &reg_label_buffer),
+                        if (negative) "-" else "+",
+                        if (negative) data.displacement * -1 else data.displacement,
+                    }) catch unreachable;
+                }
+            } else {
+                var reg_label_buffer: [2][2]u8 = undefined;
+                const reg_0_label = getRegisterLabel(data.reg[0], &reg_label_buffer[0]);
+                const reg_1_label = getRegisterLabel(data.reg[1], &reg_label_buffer[1]);
+                if (data.displacement == 0) {
+                    return std.fmt.bufPrint(buffer, "[{s} + {s}]", .{
+                        reg_0_label,
+                        reg_1_label,
+                    }) catch unreachable;
+                } else {
+                    const negative = data.displacement < 0;
+                    return std.fmt.bufPrint(buffer, "[{s} + {s} {s} {d}]", .{
+                        reg_0_label,
+                        reg_1_label,
+                        if (negative) "-" else "+",
+                        if (negative) data.displacement * -1 else data.displacement,
+                    }) catch unreachable;
+                }
             }
-            return std.fmt.bufPrint(buffer, "[{s} {s} {d}]", .{ mem_without_displacement, if (signed) "-" else "+", displacement });
+        },
+        .relative_jump_displacement => |data| {
+            return std.fmt.bufPrint(buffer, "{d}", .{data}) catch unreachable;
+        },
+        .none => {
+            return buffer[0..0];
         }
     }
-}
-
-fn printRegToFromMem(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const RegToFromMem) !void {
-    var mem_label_buffer: [17]u8 = undefined;
-    const mem_label = try getMemLabel(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
-    const reg_label = registerIdToLabel(data.reg);
-
-    try writer.print("{s} {s}, {s}\n", .{ getInstructionTypeString(instruction_type), if (data.d) reg_label else mem_label, if (data.d) mem_label else reg_label });
-}
-
-fn printRegToFromReg(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const RegToFromReg) !void {
-    try writer.print("{s} {s}, {s}\n", .{
-        getInstructionTypeString(instruction_type),
-        registerIdToLabel(data.dst_reg),
-        registerIdToLabel(data.src_reg),
-    });
-}
-
-fn printImmToReg(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const ImmToReg) !void {
-    try writer.print("{s} {s}, {d}\n", .{ getInstructionTypeString(instruction_type), registerIdToLabel(data.reg), data.immediate });
-}
-
-fn printImmToMem(writer: std.fs.File.Writer, instruction_type: InstructionType, data: *const ImmToMem) !void {
-    var mem_label_buffer: [17]u8 = undefined;
-    const mem_label = try getMemLabel(&mem_label_buffer, data.displacement_only, data.displacement_size, data.displacement, data.rm_lookup_key);
-
-    try writer.print("{s} {s} {s}, {d}\n", .{
-        getInstructionTypeString(instruction_type),
-        if (data.w == 0) "byte" else "word",
-        mem_label,
-        data.immediate,
-    });
 }
 
 fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
@@ -288,6 +249,7 @@ fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
 }
 
 fn extractModRegRm(data: u8) struct { u2, u3, u3 } {
+    // TODO(TB): try doing this with a packed struct
     return .{
         @intCast(data >> 6),
         @intCast((data >> 3) & 0b111),
@@ -307,13 +269,9 @@ fn getJumpIpInc8(instruction: Instruction) ?i8 {
     return switch (instruction.type) {
         .jnz, .je, .jl, .jle, .jb, .jbe, .jp, .jo, .js,
         .jnl, .jg, .jnb, .ja, .jnp, .jno, .jns, .loop,
-        .loopz, .loopnz, .jcxz => |args| args.ip_inc8,
+        .loopz, .loopnz, .jcxz => instruction.operand[0].type.relative_jump_displacement,
         else => null,
     };
-}
-
-fn getAccRegId(wide: bool) RegisterId {
-    return if (wide) RegisterId.ax else RegisterId.al;
 }
 
 fn insertSortedSetArrayList(xs: *std.ArrayList(usize), y: usize) !void {
@@ -351,408 +309,338 @@ fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *
     }
 }
 
-fn printJump(writer: std.fs.File.Writer, instruction_type: InstructionType, byte_index: usize, data: JumpData, instruction_size: usize, labels: std.ArrayList(usize)) !void {
-    // TODO(TB): consider overflow
-    // TODO(TB): jump offset is from end of jump instruction?
-    const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + data.ip_inc8)) + instruction_size;
-    const index: usize = findValueIndex(labels, label_byte_index).?;
-    try writer.print("{s} test_label{d}\n", .{getInstructionTypeString(instruction_type), index});
-}
-
-fn createRegToFromRegMem(d: bool, w: u1, mod: u2, reg: u3, rm: u3, displacement: [*]const u8) RegToFromRegMem {
-    const reg_id = regFieldEncoding(w, reg);
-    if (mod == 0b11) {
-        const rm_id = regFieldEncoding(w, rm);
-
-        return .{
-            .params = .{
-                .regToFromReg = .{
-                    .dst_reg = if (d) reg_id else rm_id,
-                    .src_reg = if (d) rm_id else reg_id,
-                },
-            },
-            .size = 2,
-        };
-    } else {
-        // mod = 00, 01, or 10
-        const displacement_only = mod == 0b00 and rm == 0b110;
-        const displacement_size: u8 = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
-        var result: RegToFromRegMem = .{
-            .params = .{
-                .regToFromMem = .{
-                    .reg = reg_id,
-                    .displacement_size = displacement_size,
-                    .displacement = undefined,
-                    .rm_lookup_key = rm,
-                    .d = d,
-                    .displacement_only = displacement_only,
-                },
-            },
-            .size = if (mod == 0b10 or displacement_only) @as(u8, 4) else if (mod == 0b01) @as(u8, 3) else @as(u8, 2),
-        };
-        @memcpy(result.params.regToFromMem.displacement[0..displacement_size], displacement[0..displacement_size]);
-        return result;
-    }
-}
-
-fn createImmToRegMem(mod: u2, rm: u3, s: u1, w: u1, data: [*]const u8) ImmToRegMem {
-    const displacement_only = mod == 0b00 and rm == 0b110;
-    const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
-    const immediate_index_offset: u8 = 2 + displacement_size;
-    const wide = s == 0 and w == 1;
-    const immediate: u16 = extractUnsignedWord(data + immediate_index_offset, wide);
-
-    if (mod == 0b11) {
-        // imm to reg
-        // TODO(TB): not sure how to test this
-        return .{
-            .params = .{
-                .immToReg = .{
-                    .reg = regFieldEncoding(w, rm),
-                    .immediate = immediate,
-                },
-            },
-            .size = if (wide) 4 else 3,
-        };
-    } else {
-        // imm to mem
-        var result: ImmToRegMem = .{
-            .params = .{
-                .immToMem = .{
-                    .immediate = immediate,
-                    .displacement_only = displacement_only,
-                    .displacement_size = displacement_size,
-                    .rm_lookup_key = rm,
-                    .w = w,
-                    .displacement = undefined,
-                },
-            },
-            .size = displacement_size + @as(u8, if (wide) 4 else 3),
-        };
-        @memcpy(result.params.immToMem.displacement[0..displacement_size], data[2 .. 2 + displacement_size]);
-        return result;
-    }
-}
-
 const Context = struct {
     data: []const u8,
     index: usize,
 };
+
+fn decodeImmToReg(instruction_type: InstructionType, context: Context) Instruction {
+    const w: u1 = @intCast((context.data[context.index] & 0b00001000) >> 3);
+    var instruction: Instruction = .{
+        .address = @intCast(context.index),
+        .type = instruction_type,
+        .operand = undefined,
+        .size = 2 + @as(u8, w),
+        .wide = w != 0,
+    };
+    instruction.operand[0] = .{
+        .type = .{
+            .register = regFieldEncoding(w, @intCast(context.data[context.index] & 0b00000111)),
+        },
+    };
+    instruction.operand[1] = .{
+        .type = .{
+            .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, w != 0),
+        },
+    };
+    return instruction;
+}
+
+fn decodeAddSubCmpRegToFromRegMem(context: Context) Instruction {
+    return decodeRegToFromRegMem(extractAddSubCmpType(@intCast((context.data[context.index] >> 3) & 0b00000111)), context);
+}
+
+fn decodeRegToFromRegMem(instruction_type: InstructionType, context: Context) Instruction {
+    const d: bool = context.data[context.index] & 0b00000010 != 0;
+    const w: u1 = @intCast(context.data[context.index] & 0b00000001);
+
+    const mod, const reg, const rm = extractModRegRm(context.data[context.index + 1]);
+    const displacement: [*]const u8 = context.data.ptr + context.index + 2;
+    var instruction: Instruction = .{
+        .type = instruction_type,
+        .address = @intCast(context.index),
+        .operand = undefined,
+        .size = undefined,
+        .wide = w != 0,
+    };
+    instruction.operand[if (d) 0 else 1] = .{ .type = .{ .register = regFieldEncoding(w, reg) } };
+    const rm_operand_index: u1 = if (d) 1 else 0;
+    if (mod == 0b11) {
+        instruction.operand[rm_operand_index] = .{ .type = .{ .register = regFieldEncoding(w, rm) } };
+        instruction.size = 2;
+    } else {
+        // mod = 00, 01, or 10
+        instruction.operand[rm_operand_index] = .{
+            .type = .{
+                .memory = createMem(mod, rm, displacement),
+            },
+        };
+        instruction.size = 2 + instruction.operand[rm_operand_index].type.memory.displacement_size;
+    }
+    return instruction;
+}
+
+fn extractAddSubCmpType(bits: u3) InstructionType {
+    return switch (bits) {
+        0b000 => .add,
+        0b101 => .sub,
+        0b111 => .cmp,
+        else => unreachable,
+    };
+}
+
+fn decodeAddSubCmpImmToAcc(context: Context) Instruction {
+    const wide: bool = (context.data[context.index] & 0b1) != 0;
+    var instruction: Instruction = .{
+        .type = extractAddSubCmpType(@intCast((context.data[context.index] >> 3) & 0b00000111)),
+        .address = @intCast(context.index),
+        .operand = undefined,
+        .size = if (wide) 3 else 2,
+        .wide = wide,
+    };
+    instruction.operand[0].type = .{
+        .register = .{
+            .index = .a,
+            .offset = .none,
+            .size = if (wide) .word else .byte,
+        },
+    };
+    instruction.operand[1].type = .{
+        .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, wide),
+    };
+    return instruction;
+}
+
+fn decodeAddSubCmpImmToRegMem(context: Context) Instruction {
+    _, const reg, _ = extractModRegRm(context.data[context.index + 1]);
+    const s: u1 = @intCast((context.data[context.index] & 0b10) >> 1);
+    return decodeImmToRegMem(extractAddSubCmpType(reg), context, s);
+}
+
+fn decodeImmToRegMem(instruction_type: InstructionType, context: Context, s: u1) Instruction {
+    const data = context.data;
+    const i = context.index;
+    const w: u1 = @intCast(data[i] & 0b1);
+    const mod, const reg, const rm = extractModRegRm(data[i + 1]);
+    std.debug.assert(reg == 0b000 or reg == 0b101 or reg == 0b111);
+    const displacement_only = mod == 0b00 and rm == 0b110;
+    const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
+    const immediate_index_offset: u8 = 2 + displacement_size;
+    const wide_immediate = s == 0 and w == 1;
+    const immediate: u16 = extractUnsignedWord(data.ptr + i + immediate_index_offset, wide_immediate);
+
+    var instruction: Instruction = .{
+        .type = instruction_type,
+        .address = @intCast(i),
+        .operand = undefined,
+        .size = undefined,
+        // TODO(TB): instruction should be wide if w=1, w=1 && s=0 is only for data being 2 bytes?
+        .wide = w != 0,
+    };
+    instruction.operand[1].type = .{
+        .immediate = immediate,
+    };
+    if (mod == 0b11) {
+        // imm to reg
+        instruction.operand[0].type = .{
+            .register = regFieldEncoding(w, rm),
+        };
+        instruction.size = if (wide_immediate) 4 else 3;
+    } else {
+        // imm to mem
+        const displacement: [*]const u8 = context.data.ptr + context.index + 2;
+        instruction.operand[0].type = .{
+            .memory = createMem(mod, rm, displacement),
+        };
+        instruction.size = instruction.operand[0].type.memory.displacement_size + @as(u8, if (wide_immediate) 4 else 3);
+    }
+    return instruction;
+}
+
+fn createMem(mod: u2, rm: u3, displacement: [*]const u8) Memory {
+    const displacement_only = mod == 0b00 and rm == 0b110;
+    const displacement_size = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
+    std.debug.assert(displacement_size == 0 or displacement_size == 1 or displacement_size == 2);
+    var result: Memory = .{
+        .displacement = if (displacement_size > 0) extractSignedWord(displacement, displacement_size == 2) else 0,
+        .displacement_size = displacement_size,
+        .reg = undefined,
+    };
+    result.reg[0].size = .word;
+    result.reg[0].offset = .none;
+    result.reg[1].size = .word;
+    result.reg[1].offset = .none;
+    switch (rm) {
+        0b000 => {
+            result.reg[0].index = .b;
+            result.reg[1].index = .si;
+        },
+        0b001 => {
+            result.reg[0].index = .b;
+            result.reg[1].index = .di;
+        },
+        0b010 => {
+            result.reg[0].index = .bp;
+            result.reg[1].index = .si;
+        },
+        0b011 => {
+            result.reg[0].index = .bp;
+            result.reg[1].index = .di;
+        },
+        0b100 => {
+            result.reg[0].index = .si;
+            result.reg[1].index = .none;
+        },
+        0b101 => {
+            result.reg[0].index = .di;
+            result.reg[1].index = .none;
+        },
+        0b110 => {
+            result.reg[0].index = if (mod == 0b00) .none else .bp;
+            result.reg[1].index = .none;
+        },
+        0b111 => {
+            result.reg[0].index = .b;
+            result.reg[1].index = .none;
+        },
+    }
+    return result;
+}
 
 fn decode(context: Context) ?Instruction {
     const data = context.data;
     const i = context.index;
     if ((data[i] & 0b11110000) == 0b10110000) {
         // mov imm to reg
-        const w: u1 = @intCast((data[i] & 0b00001000) >> 3);
-        var instruction: Instruction = undefined;
-        instruction.type = .{ .mov = .{ .immToReg = undefined } };
-        instruction.type.mov.immToReg.reg = regFieldEncoding(w, @intCast(data[i] & 0b00000111));
-        instruction.type.mov.immToReg.immediate = extractUnsignedWord(data.ptr + i + 1, w != 0);
-        instruction.size = 2 + @as(u8, w);
-        return instruction;
+        return decodeImmToReg(.mov, context);
     } else if ((data[i] & 0b11111100) == 0b10001000) {
         // mov reg to/from reg/mem
-        const d: bool = data[i] & 0b00000010 != 0;
-        const w: u1 = @intCast(data[i] & 0b00000001);
-
-        const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-        const displacement: [*]const u8 = data.ptr + i + 2;
-        const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
-        var instruction: Instruction = undefined;
-        instruction.type = .{ .mov = switch (params.params) {
-            .regToFromReg => |specific_params| .{
-                .regToFromReg = specific_params,
-            },
-            .regToFromMem => |specific_params| .{
-                .regToFromMem = specific_params,
-            },
-        } };
-        instruction.size = params.size;
-        return instruction;
+        return decodeRegToFromRegMem(.mov, context);
     } else if ((data[i] & 0b11111110) == 0b11000110) {
         // mov imm to reg/mem
-        const w: u1 = @intCast(data[i] & 0b1);
-        const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-        std.debug.assert(reg == 0);
-        const params = createImmToRegMem(mod, rm, 0, w, data[i..].ptr);
-        var instruction: Instruction = undefined;
-        instruction.type = .{ .mov = switch (params.params) {
-            .immToReg => |specific_params| .{
-                .immToReg = specific_params,
-            },
-            .immToMem => |specific_params| .{
-                .immToMem = specific_params,
-            },
-        } };
-        instruction.size = params.size;
-        return instruction;
+        return decodeImmToRegMem(.mov, context, 0);
     } else if ((data[i] & 0b11111100) == 0b10100000) {
         // mov mem to/from acc
         const d: bool = data[i] & 0b00000010 == 0;
-        const w: u1 = @intCast(data[i] & 0b1);
+        const wide = data[i] & 0b1 != 0;
 
-        var instruction: Instruction = undefined;
-        instruction.type = .{ .mov = .{ .regToFromMem = .{
-            .reg = getAccRegId(w != 0),
-            .displacement = undefined,
-            .displacement_size = 2,
-            .rm_lookup_key = 0,
-            .d = d,
-            .displacement_only = true,
-        } } };
-        @memcpy(&instruction.type.mov.regToFromMem.displacement, data[i + 1 .. i + 3]);
-        instruction.size = 3;
-        return instruction;
-    } else if ((data[i] & 0b11111100) == 0b00000000) {
-        // add reg/mem to/from reg
-        const d = (data[i] & 0b00000010) != 0;
-        const w: u1 = @intCast(data[i] & 0b00000001);
-        const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-        const displacement: [*]const u8 = data.ptr + i + 2;
-
-        var instruction: Instruction = undefined;
-        const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
-        instruction.type = .{ .add = switch (params.params) {
-            .regToFromReg => |specific_params| .{
-                .regToFromReg = specific_params,
+        var instruction: Instruction = .{
+            .type = .mov,
+            .address = @intCast(i),
+            .operand = undefined,
+            .size = 3,
+            .wide = wide,
+        };
+        const mem_index: u8 = if (d) 1 else 0;
+        const acc_index: u8 = if (d) 0 else 1;
+        instruction.operand[acc_index].type = .{
+            .register = .{
+                .index = .a,
+                .offset = .none,
+                .size = if (wide) .word else .byte,
             },
-            .regToFromMem => |specific_params| .{
-                .regToFromMem = specific_params,
+        };
+        instruction.operand[mem_index].type = .{
+            .memory = .{
+                .reg = undefined,
+                // TODO(TB): displacement in this case should be unsigned?
+                .displacement = extractSignedWord(data.ptr + i + 1, true),
+                .displacement_size = 2,
             },
-        } };
-        instruction.size = params.size;
+        };
+        instruction.operand[mem_index].type.memory.reg[0].index = .none;
+        instruction.operand[mem_index].type.memory.reg[1].index = .none;
         return instruction;
+    } else if ((data[i] & 0b11000100) == 0b00000000) {
+        // add/sub/cmp reg/mem to/from reg
+        return decodeAddSubCmpRegToFromRegMem(context);
     } else if ((data[i] & 0b11111100) == 0b10000000) {
         // add/sub/cmp imm to reg/mem
-        const s: u1 = @intCast((data[i] & 0b10) >> 1);
-        const w: u1 = @intCast(data[i] & 0b1);
-        const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-        std.debug.assert(reg == 0b000 or reg == 0b101 or reg == 0b111);
-        const params = createImmToRegMem(mod, rm, s, w, data[i..].ptr);
-        var instruction: Instruction = undefined;
-        if (reg == 0b000) {
-            instruction.type = .{ .add = switch (params.params) {
-                .immToReg => |specific_params| .{
-                    .immToReg = specific_params,
-                },
-                .immToMem => |specific_params| .{
-                    .immToMem = specific_params,
-                },
-            } };
-        } else if (reg == 0b101) {
-            instruction.type = .{ .sub = switch (params.params) {
-                .immToReg => |specific_params| .{
-                    .immToReg = specific_params,
-                },
-                .immToMem => |specific_params| .{
-                    .immToMem = specific_params,
-                },
-            } };
-        } else if (reg == 0b111) {
-            instruction.type = .{ .cmp = switch (params.params) {
-                .immToReg => |specific_params| .{
-                    .immToReg = specific_params,
-                },
-                .immToMem => |specific_params| .{
-                    .immToMem = specific_params,
-                },
-            } };
-        }
-        instruction.size = params.size;
-        return instruction;
-    } else if ((data[i] & 0b11111110) == 0b00000100) {
-        // add imm to acc
-        // TODO(TB): how to test this?
-        const w: bool = (data[i] & 0b1) != 0;
-        const imm: u16 = extractUnsignedWord(data.ptr + i + 1, w);
-        var instruction: Instruction = undefined;
-        instruction.type = .{
-            .add = .{ .immToReg = .{
-                .immediate = imm,
-                .reg = getAccRegId(w),
-            } },
-        };
-        instruction.size = if (w) 3 else 2;
-        return instruction;
-    } else if ((data[i] & 0b11111100) == 0b00101000) {
-        // sub reg/mem to/from reg
-        const d = (data[i] & 0b00000010) != 0;
-        const w: u1 = @intCast(data[i] & 0b00000001);
-        const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-        const displacement: [*]const u8 = data.ptr + i + 2;
-
-        var instruction: Instruction = undefined;
-        const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
-        instruction.type = .{ .sub = switch (params.params) {
-            .regToFromReg => |specific_params| .{
-                .regToFromReg = specific_params,
-            },
-            .regToFromMem => |specific_params| .{
-                .regToFromMem = specific_params,
-            },
-        } };
-        instruction.size = params.size;
-        return instruction;
-    } else if ((data[i] & 0b11111110) == 0b00101100) {
-        // sub imm to acc
-        const w: bool = (data[i] & 0b1) != 0;
-        const imm: u16 = extractUnsignedWord(data.ptr + i + 1, w);
-        var instruction: Instruction = undefined;
-        instruction.type = .{
-            .sub = .{ .immToReg = .{
-                .immediate = imm,
-                .reg = getAccRegId(w),
-            } },
-        };
-        instruction.size = if (w) 3 else 2;
-        return instruction;
-    } else if ((data[i] & 0b11111100) == 0b00111000) {
-        // cmp reg/mem to/from reg
-        const d = (data[i] & 0b00000010) != 0;
-        const w: u1 = @intCast(data[i] & 0b00000001);
-        const mod, const reg, const rm = extractModRegRm(data[i + 1]);
-        const displacement: [*]const u8 = data.ptr + i + 2;
-
-        var instruction: Instruction = undefined;
-        const params = createRegToFromRegMem(d, w, mod, reg, rm, displacement);
-        instruction.type = .{ .cmp = switch (params.params) {
-            .regToFromReg => |specific_params| .{
-                .regToFromReg = specific_params,
-            },
-            .regToFromMem => |specific_params| .{
-                .regToFromMem = specific_params,
-            },
-        } };
-        instruction.size = params.size;
-        return instruction;
-    } else if ((data[i] & 0b11111110) == 0b00111100) {
-        // cmp imm to acc
-        const w: bool = (data[i] & 0b1) != 0;
-        const imm: u16 = extractUnsignedWord(data.ptr + i + 1, w);
-        var instruction: Instruction = undefined;
-        instruction.type = .{
-            .cmp = .{ .immToReg = .{
-                .immediate = imm,
-                .reg = getAccRegId(w),
-            } },
-        };
-        instruction.size = if (w) 3 else 2;
-        return instruction;
+        return decodeAddSubCmpImmToRegMem(context);
+    } else if ((data[i] & 0b11000110) == 0b00000100) {
+        // add/sub/cmp imm to acc
+        return decodeAddSubCmpImmToAcc(context);
     } else if ((data[i] & 0b11110000) == 0b01110000) {
         // jnz, je, jnz, je, jl, jle, jb, jbe, jp, jo, js, jnl, jg, jnb, ja, jnp, jno, jns
-        var instruction: Instruction = undefined;
-        const jump_data = .{ .ip_inc8 = @as(i8, @bitCast(data[i + 1])) };
-        instruction.type = switch (data[i] & 0b00001111) {
-            0b0101 => .{ .jnz = jump_data },
-            0b0100 => .{ .je = jump_data },
-            0b1100 => .{ .jl = jump_data },
-            0b1110 => .{ .jle = jump_data },
-            0b0010 => .{ .jb = jump_data },
-            0b0110 => .{ .jbe = jump_data },
-            0b1010 => .{ .jp = jump_data },
-            0b0000 => .{ .jo = jump_data },
-            0b1000 => .{ .js = jump_data },
-            0b1101 => .{ .jnl = jump_data },
-            0b1111 => .{ .jg = jump_data },
-            0b0011 => .{ .jnb = jump_data },
-            0b0111 => .{ .ja = jump_data },
-            0b1011 => .{ .jnp = jump_data },
-            0b0001 => .{ .jno = jump_data },
-            0b1001 => .{ .jns = jump_data },
-            else => unreachable,
+        var instruction: Instruction = .{
+            .type = switch (data[i] & 0b00001111) {
+                0b0101 => .jnz,
+                0b0100 => .je,
+                0b1100 => .jl,
+                0b1110 => .jle,
+                0b0010 => .jb,
+                0b0110 => .jbe,
+                0b1010 => .jp,
+                0b0000 => .jo,
+                0b1000 => .js,
+                0b1101 => .jnl,
+                0b1111 => .jg,
+                0b0011 => .jnb,
+                0b0111 => .ja,
+                0b1011 => .jnp,
+                0b0001 => .jno,
+                0b1001 => .jns,
+                else => unreachable,
+            },
+            .address = @intCast(i),
+            .operand = undefined,
+            .size = 2,
+            .wide = false,
         };
-        instruction.size = 2;
+        instruction.operand[0].type = .{
+            .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
+        };
+        instruction.operand[1].type = .none;
         return instruction;
     } else if ((data[i] & 0b11111100) == 0b11100000) {
         // loop, loopz, loopnz, jcxz
-        var instruction: Instruction = undefined;
-        const jump_data = .{ .ip_inc8 = @as(i8, @bitCast(data[i + 1])) };
-        instruction.type = switch (data[i] & 0b00000011) {
-            0b10 => .{ .loop = jump_data },
-            0b01 => .{ .loopz = jump_data },
-            0b00 => .{ .loopnz = jump_data },
-            0b11 => .{ .jcxz = jump_data },
-            else => unreachable,
+        var instruction: Instruction = .{
+            .type = switch (data[i] & 0b00000011) {
+                0b10 => .loop,
+                0b01 => .loopz,
+                0b00 => .loopnz,
+                0b11 => .jcxz,
+                else => unreachable,
+            },
+            .address = @intCast(i),
+            .operand = undefined,
+            .size = 2,
+            .wide = false,
         };
-        instruction.size = 2;
+        instruction.operand[0].type = .{
+            .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
+        };
         return instruction;
     } else {
         return null;
     }
 }
 
-fn print(writer: std.fs.File.Writer, instruction: Instruction, byte_index: usize, labels: std.ArrayList(usize)) !void {
-    switch (instruction.type) {
-        .mov => |args_kind| {
-            switch (args_kind) {
-                .regToFromMem => |d| {
-                    try printRegToFromMem(writer, .mov, &d);
-                },
-                .regToFromReg => |d| {
-                    try printRegToFromReg(writer, .mov, &d);
-                },
-                .immToReg => |d| {
-                    try printImmToReg(writer, .mov, &d);
-                },
-                .immToMem => |d| {
-                    try printImmToMem(writer, .mov, &d);
-                },
-            }
-        },
-        .add => |args_kind| {
-            switch (args_kind) {
-                .regToFromReg => |d| {
-                    try printRegToFromReg(writer, .add, &d);
-                },
-                .regToFromMem => |d| {
-                    try printRegToFromMem(writer, .add, &d);
-                },
-                .immToReg => |d| {
-                    try printImmToReg(writer, .add, &d);
-                },
-                .immToMem => |d| {
-                    try printImmToMem(writer, .add, &d);
-                },
-            }
-        },
-        .sub => |args_kind| {
-            switch (args_kind) {
-                .regToFromReg => |d| {
-                    try printRegToFromReg(writer, .sub, &d);
-                },
-                .regToFromMem => |d| {
-                    try printRegToFromMem(writer, .sub, &d);
-                },
-                .immToReg => |d| {
-                    try printImmToReg(writer, .sub, &d);
-                },
-                .immToMem => |d| {
-                    try printImmToMem(writer, .sub, &d);
-                },
-            }
-        },
-        .cmp => |args_kind| {
-            switch (args_kind) {
-                .regToFromReg => |d| {
-                    try printRegToFromReg(writer, .cmp, &d);
-                },
-                .regToFromMem => |d| {
-                    try printRegToFromMem(writer, .cmp, &d);
-                },
-                .immToReg => |d| {
-                    try printImmToReg(writer, .cmp, &d);
-                },
-                .immToMem => |d| {
-                    try printImmToMem(writer, .cmp, &d);
-                },
-            }
-        },
-        .jnz, .je, .jl, .jle, .jb, .jbe, .jp, .jo, .js,
-        .jnl, .jg, .jnb, .ja, .jnp, .jno, .jns, .loop,
-        .loopz, .loopnz, .jcxz => |args| {
-           try printJump(writer, instruction.type, byte_index, args, instruction.size, labels);
-        },
+fn print(writer: std.fs.File.Writer, instruction: Instruction) !void {
+    var operand_buffer: [2][32]u8 = undefined;
+    const operand_1_label = getOperandLabel(instruction.operand[0], &operand_buffer[0]);
+    const instruction_type_string = getInstructionTypeString(instruction.type);
+    if (instruction.operand[1].type == .none) {
+        try writer.print("{s} {s}\n", .{
+            instruction_type_string,
+            operand_1_label,
+        });
+    } else {
+        if (instruction.operand[0].type == .memory and instruction.operand[1].type == .immediate) {
+            try writer.print("{s} {s} {s}, {s}\n", .{
+                instruction_type_string,
+                if (instruction.wide) "word" else "byte",
+                operand_1_label,
+                getOperandLabel(instruction.operand[1], &operand_buffer[1]),
+            });
+        } else {
+            try writer.print("{s} {s}, {s}\n", .{
+                instruction_type_string,
+                operand_1_label,
+                getOperandLabel(instruction.operand[1], &operand_buffer[1]),
+            });
+        }
+    }
+}
+
+fn printWithLabels(writer: std.fs.File.Writer, instruction: Instruction, byte_index: usize, labels: std.ArrayList(usize)) !void {
+    const maybe_jump_ip_inc8 = getJumpIpInc8(instruction);
+    if (maybe_jump_ip_inc8) |jump_ip_inc8| {
+        const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + jump_ip_inc8)) + instruction.size;
+        const index: usize = findValueIndex(labels, label_byte_index).?;
+        try writer.print("{s} test_label{d}\n", .{getInstructionTypeString(instruction.type), index});
+    } else {
+        try print(writer, instruction);
     }
 }
 
@@ -765,11 +653,8 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, d
     var labels = std.ArrayList(usize).init(allocator);
     defer labels.deinit();
 
-    _ = try writer.write("\nbits 16\n\n");
-
     while (context.index < data.len) {
         const instruction = decode(context).?;
-
         try instructions.append(instruction);
         context.index += instruction.size;
 
@@ -781,12 +666,14 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, d
         }
     }
 
+    _ = try writer.write("\nbits 16\n\n");
+
     var byte_index: usize = 0;
     var next_label_index: usize = 0;
     for (instructions.items) |instruction| {
         try printLabel(writer, byte_index, &next_label_index, labels);
 
-        try print(writer, instruction, byte_index, labels);
+        try printWithLabels(writer, instruction, byte_index, labels);
 
         byte_index += instruction.size;
     }
