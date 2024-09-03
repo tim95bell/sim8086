@@ -95,6 +95,7 @@ const RegisterIndex = enum {
     bp,
     si,
     di,
+    ip,
     none,
 };
 
@@ -152,6 +153,10 @@ fn getRegisterLabel(register: Register, buffer: []u8) []u8 {
         .di => {
             buffer[0] = 'd';
             buffer[1] = 'i';
+        },
+        .ip => {
+            buffer[0] = 'i';
+            buffer[1] = 'p';
         },
         .none => {
             return buffer[0..0];
@@ -315,24 +320,121 @@ fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *
 }
 
 const Context = struct {
-    data: []const u8,
-    index: usize,
+    memory: [1028 * 1028 * 1028]u8,
+    program_size: u16,
+    register: extern union {
+        // change 9 to RegisterIndex.len
+        named_word: extern struct {
+            ax: u16,
+            bx: u16,
+            cx: u16,
+            dx: u16,
+            sp: u16,
+            bp: u16,
+            si: u16,
+            di: u16,
+            ip: u16,
+        },
+        named_byte: extern struct {
+            al: u8,
+            ah: u8,
+            bl: u8,
+            bh: u8,
+            cl: u8,
+            ch: u8,
+            dl: u8,
+            dh: u8,
+        },
+        byte: [@typeInfo(RegisterIndex).Enum.fields.len][2]u8,
+        word: [@typeInfo(RegisterIndex).Enum.fields.len]u16,
+    },
+
+    fn init(self: *Context) void {
+        self.memory = undefined;
+        self.program_size = 0;
+        self.register = undefined;
+
+        self.register.byte[0][0] = 1;
+        self.register.byte[0][1] = 2;
+        self.register.byte[1][0] = 3;
+        self.register.byte[1][1] = 4;
+        self.register.byte[2][0] = 5;
+        self.register.byte[2][1] = 6;
+        self.register.byte[3][0] = 7;
+        self.register.byte[3][1] = 8;
+        self.register.byte[4][0] = 9;
+        self.register.byte[4][1] = 10;
+        self.register.byte[5][0] = 11;
+        self.register.byte[5][1] = 12;
+        self.register.byte[6][0] = 13;
+        self.register.byte[6][1] = 14;
+        self.register.byte[7][0] = 15;
+        self.register.byte[7][1] = 16;
+        self.register.byte[8][0] = 17;
+        self.register.byte[8][1] = 18;
+
+        std.debug.assert(self.register.byte[0][0] == self.register.named_byte.al);
+        std.debug.assert(self.register.byte[0][1] == self.register.named_byte.ah);
+        std.debug.assert(@as(u16, self.register.byte[0][0]) | (@as(u16, self.register.byte[0][1]) << 8) == self.register.named_word.ax);
+        std.debug.assert(@as(u16, self.register.byte[0][0]) | (@as(u16, self.register.byte[0][1]) << 8) == self.register.word[0]);
+
+        std.debug.assert(self.register.byte[1][0] == self.register.named_byte.bl);
+        std.debug.assert(self.register.byte[1][1] == self.register.named_byte.bh);
+        std.debug.assert(@as(u16, self.register.byte[1][0]) | (@as(u16, self.register.byte[1][1]) << 8) == self.register.named_word.bx);
+        std.debug.assert(@as(u16, self.register.byte[1][0]) | (@as(u16, self.register.byte[1][1]) << 8) == self.register.word[1]);
+
+        std.debug.assert(self.register.byte[2][0] == self.register.named_byte.cl);
+        std.debug.assert(self.register.byte[2][1] == self.register.named_byte.ch);
+        std.debug.assert(@as(u16, self.register.byte[2][0]) | (@as(u16, self.register.byte[2][1]) << 8) == self.register.named_word.cx);
+        std.debug.assert(@as(u16, self.register.byte[2][0]) | (@as(u16, self.register.byte[2][1]) << 8) == self.register.word[2]);
+
+        std.debug.assert(self.register.byte[3][0] == self.register.named_byte.dl);
+        std.debug.assert(self.register.byte[3][1] == self.register.named_byte.dh);
+        std.debug.assert(@as(u16, self.register.byte[3][0]) | (@as(u16, self.register.byte[3][1]) << 8) == self.register.named_word.dx);
+        std.debug.assert(@as(u16, self.register.byte[3][0]) | (@as(u16, self.register.byte[3][1]) << 8) == self.register.word[3]);
+
+        std.debug.assert(@as(u16, self.register.byte[4][0]) | (@as(u16, self.register.byte[4][1]) << 8) == self.register.named_word.sp);
+        std.debug.assert(@as(u16, self.register.byte[4][0]) | (@as(u16, self.register.byte[4][1]) << 8) == self.register.word[4]);
+
+        std.debug.assert(@as(u16, self.register.byte[5][0]) | (@as(u16, self.register.byte[5][1]) << 8) == self.register.named_word.bp);
+        std.debug.assert(@as(u16, self.register.byte[5][0]) | (@as(u16, self.register.byte[5][1]) << 8) == self.register.word[5]);
+
+        std.debug.assert(@as(u16, self.register.byte[6][0]) | (@as(u16, self.register.byte[6][1]) << 8) == self.register.named_word.si);
+        std.debug.assert(@as(u16, self.register.byte[6][0]) | (@as(u16, self.register.byte[6][1]) << 8) == self.register.word[6]);
+
+        std.debug.assert(@as(u16, self.register.byte[7][0]) | (@as(u16, self.register.byte[7][1]) << 8) == self.register.named_word.di);
+        std.debug.assert(@as(u16, self.register.byte[7][0]) | (@as(u16, self.register.byte[7][1]) << 8) == self.register.word[7]);
+
+        std.debug.assert(@as(u16, self.register.byte[8][0]) | (@as(u16, self.register.byte[8][1]) << 8) == self.register.named_word.ip);
+        std.debug.assert(@as(u16, self.register.byte[8][0]) | (@as(u16, self.register.byte[8][1]) << 8) == self.register.word[8]);
+
+        // TODO(TB): zero out memory?
+        @memset(&self.register.word, 0);
+    }
 };
 
-fn decodeImmToReg(instruction_type: InstructionType, context: Context) Instruction {
-    const w: u1 = @intCast((context.data[context.index] & 0b00001000) >> 3);
+fn getRegisterSlice(register: Register, context: *const Context) []u8 {
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)..@intFromEnum(register.offset) + @intFromEnum(register.size)];
+}
+
+fn decodeImmToReg(instruction_type: InstructionType, context: *const Context) Instruction {
+    const data = context.memory[0..];
+    const index = context.register.named_word.ip;
+    const w: u1 = @intCast((data[index] & 0b00001000) >> 3);
     return .{
-        .address = @intCast(context.index),
+        .address = @intCast(index),
         .type = instruction_type,
         .operand = .{
             .{
                 .type = .{
-                    .register = regFieldEncoding(w, @intCast(context.data[context.index] & 0b00000111)),
+                    .register = regFieldEncoding(w, @intCast(data[index] & 0b00000111)),
                 },
             },
             .{
                 .type = .{
-                    .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, w != 0),
+                    .immediate = extractUnsignedWord(data.ptr + index + 1, w != 0),
                 },
             }
         },
@@ -341,19 +443,23 @@ fn decodeImmToReg(instruction_type: InstructionType, context: Context) Instructi
     };
 }
 
-fn decodeAddSubCmpRegToFromRegMem(context: Context) Instruction {
-    return decodeRegToFromRegMem(extractAddSubCmpType(@intCast((context.data[context.index] >> 3) & 0b00000111)), context);
+fn decodeAddSubCmpRegToFromRegMem(context: *const Context) Instruction {
+    const data = context.memory[0..];
+    const index = context.register.named_word.ip;
+    return decodeRegToFromRegMem(extractAddSubCmpType(@intCast((data[index] >> 3) & 0b00000111)), context);
 }
 
-fn decodeRegToFromRegMem(instruction_type: InstructionType, context: Context) Instruction {
-    const d: bool = context.data[context.index] & 0b00000010 != 0;
-    const w: u1 = @intCast(context.data[context.index] & 0b00000001);
+fn decodeRegToFromRegMem(instruction_type: InstructionType, context: *const Context) Instruction {
+    const index = context.register.named_word.ip;
+    const data = context.memory[0..];
+    const d: bool = data[context.register.named_word.ip] & 0b00000010 != 0;
+    const w: u1 = @intCast(data[index] & 0b00000001);
 
-    const mod, const reg, const rm = extractModRegRm(context.data[context.index + 1]);
-    const displacement: [*]const u8 = context.data.ptr + context.index + 2;
+    const mod, const reg, const rm = extractModRegRm(data[index + 1]);
+    const displacement: [*]const u8 = data.ptr + index + 2;
     var instruction: Instruction = .{
         .type = instruction_type,
-        .address = @intCast(context.index),
+        .address = @intCast(index),
         .operand = undefined,
         .size = undefined,
         .wide = w != 0,
@@ -384,11 +490,13 @@ fn extractAddSubCmpType(bits: u3) InstructionType {
     };
 }
 
-fn decodeAddSubCmpImmToAcc(context: Context) Instruction {
-    const wide: bool = (context.data[context.index] & 0b1) != 0;
+fn decodeAddSubCmpImmToAcc(context: *const Context) Instruction {
+    const data = context.memory[0..];
+    const index = context.register.named_word.ip;
+    const wide: bool = (data[index] & 0b1) != 0;
     return .{
-        .type = extractAddSubCmpType(@intCast((context.data[context.index] >> 3) & 0b00000111)),
-        .address = @intCast(context.index),
+        .type = extractAddSubCmpType(@intCast((data[index] >> 3) & 0b00000111)),
+        .address = @intCast(index),
         .operand = .{
             .{
                 .type = .{
@@ -401,7 +509,7 @@ fn decodeAddSubCmpImmToAcc(context: Context) Instruction {
             },
             .{
                 .type = .{
-                    .immediate = extractUnsignedWord(context.data.ptr + context.index + 1, wide),
+                    .immediate = extractUnsignedWord(data.ptr + index + 1, wide),
                 },
             },
         },
@@ -410,15 +518,17 @@ fn decodeAddSubCmpImmToAcc(context: Context) Instruction {
     };
 }
 
-fn decodeAddSubCmpImmToRegMem(context: Context) Instruction {
-    _, const reg, _ = extractModRegRm(context.data[context.index + 1]);
-    const s: u1 = @intCast((context.data[context.index] & 0b10) >> 1);
+fn decodeAddSubCmpImmToRegMem(context: *const Context) Instruction {
+    const data = context.memory[0..];
+    const index = context.register.named_word.ip;
+    _, const reg, _ = extractModRegRm(data[index + 1]);
+    const s: u1 = @intCast((data[index] & 0b10) >> 1);
     return decodeImmToRegMem(extractAddSubCmpType(reg), context, s);
 }
 
-fn decodeImmToRegMem(instruction_type: InstructionType, context: Context, s: u1) Instruction {
-    const data = context.data;
-    const i = context.index;
+fn decodeImmToRegMem(instruction_type: InstructionType, context: *const Context, s: u1) Instruction {
+    const data = context.memory[0..];
+    const i = context.register.named_word.ip;
     const w: u1 = @intCast(data[i] & 0b1);
     const mod, const reg, const rm = extractModRegRm(data[i + 1]);
     std.debug.assert(reg == 0b000 or reg == 0b101 or reg == 0b111);
@@ -447,7 +557,7 @@ fn decodeImmToRegMem(instruction_type: InstructionType, context: Context, s: u1)
         instruction.size = if (wide_immediate) 4 else 3;
     } else {
         // imm to mem
-        const displacement: [*]const u8 = context.data.ptr + context.index + 2;
+        const displacement: [*]const u8 = (&context.memory).ptr + context.register.named_word.ip + 2;
         instruction.operand[0].type = .{
             .memory = createMem(mod, rm, displacement),
         };
@@ -513,9 +623,9 @@ fn createMem(mod: u2, rm: u3, displacement: [*]const u8) Memory {
     return result;
 }
 
-fn decode(context: Context) ?Instruction {
-    const data = context.data;
-    const i = context.index;
+fn decode(context: *const Context) ?Instruction {
+    const data = context.memory[0..];
+    const i = context.register.named_word.ip;
     if ((data[i] & 0b11110000) == 0b10110000) {
         // mov imm to reg
         return decodeImmToReg(.mov, context);
@@ -662,24 +772,22 @@ fn printWithLabels(writer: std.fs.File.Writer, instruction: Instruction, byte_in
     }
 }
 
-fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, data: []const u8) !void {
-    var context: Context = .{ .data = data, .index = 0 };
-
-    var instructions = try std.ArrayList(Instruction).initCapacity(allocator, data.len / 2);
+fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, context: *Context) !void {
+    var instructions = try std.ArrayList(Instruction).initCapacity(allocator, context.program_size / 2);
     defer instructions.deinit();
 
     var labels = std.ArrayList(usize).init(allocator);
     defer labels.deinit();
 
-    while (context.index < data.len) {
+    while (context.register.named_word.ip < context.program_size) {
         const instruction = decode(context).?;
         try instructions.append(instruction);
-        context.index += instruction.size;
+        context.register.named_word.ip += instruction.size;
 
         const maybe_jump_ip_inc8 = getJumpIpInc8(instruction);
         if (maybe_jump_ip_inc8) |jump_ip_inc8| {
             // TODO(TB): consider overflow
-            const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(context.index)) + jump_ip_inc8));
+            const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(context.register.named_word.ip)) + jump_ip_inc8));
             try insertSortedSetArrayList(&labels, jump_byte);
         }
     }
@@ -707,8 +815,11 @@ pub fn main() !void {
     }
     const file_name = args[1];
     const file = try std.fs.cwd().openFile(file_name, .{});
-    const data = try file.readToEndAlloc(gpa, 1024 * 1024 * 1024);
     var out = std.io.getStdOut();
     const writer = out.writer();
-    try decodeAndPrintAll(gpa, writer, data);
+    var context: *Context = try gpa.create(Context);
+    defer gpa.destroy(context);
+    context.init();
+    context.program_size = @intCast(try file.read(&context.memory));
+    try decodeAndPrintAll(gpa, writer, context);
 }
