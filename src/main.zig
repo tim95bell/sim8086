@@ -181,7 +181,7 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
         .memory => |data| {
             if (data.reg[0].index == .none) {
                 std.debug.assert(data.reg[1].index == .none);
-                return std.fmt.bufPrint(buffer, "[{d}]", .{data.displacement}) catch unreachable;
+                return std.fmt.bufPrint(buffer, "[{d}]", .{@as(u16, @bitCast(data.displacement))}) catch unreachable;
             } else if (data.reg[1].index == .none) {
                 var reg_label_buffer: [2]u8 = undefined;
                 if (data.displacement == 0) {
