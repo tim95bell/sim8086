@@ -419,6 +419,70 @@ fn getRegisterSlice(register: Register, context: *const Context) []u8 {
     return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)..@intFromEnum(register.offset) + @intFromEnum(register.size)];
 }
 
+fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
+    if (register.size == .byte) {
+        return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
+    } else {
+        std.debug.assert(register.size == .word);
+        std.debug.assert(register.offset == .none);
+        return context.register.word[@intFromEnum(register.index)];
+    }
+}
+
+fn getRegisterValueSigned(register: Register, context: *const Context) i16 {
+    if (register.size == .byte) {
+        return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
+    } else {
+        std.debug.assert(register.size == .word);
+        std.debug.assert(register.offset == .none);
+        return @intCast(context.register.word[@intFromEnum(register.index)]);
+    }
+}
+
+fn getRegisterBytePtr(register: Register, context: *Context) *u8 {
+    std.debug.assert(register.size == .byte);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
+}
+
+fn getRegisterByteConstPtr(register: Register, context: *const Context) *const u8 {
+    std.debug.assert(register.size == .byte);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
+}
+
+fn getRegisterWordPtr(register: Register, context: *Context) *u16 {
+    std.debug.assert(register.size == .word);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    return &context.register.word[@intFromEnum(register.index)];
+}
+
+fn getRegisterWordConstPtr(register: Register, context: *const Context) *const u16 {
+    std.debug.assert(register.size == .word);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    return &context.register.word[@intFromEnum(register.index)];
+}
+
+fn getMemoryBytePtr(memory: Memory, context: *Context) *u8 {
+    // TODO(TB): check for overflow
+    // TODO(TB): what type to use for index?
+    const index: u32 = @intCast(getRegisterValueSigned(memory.reg[0], context) + getRegisterValueSigned(memory.reg[1], context) + memory.displacement);
+    return &context.memory[index];
+}
+
+fn getMemoryWordPtr(memory: Memory, context: *Context) *u16 {
+    // TODO(TB): check for overflow
+    // TODO(TB): what type to use for index?
+    // TODO(TB): treat displacement as unsigned if both regiter types are none
+    const index: u32 = @intCast(getRegisterValueSigned(memory.reg[0], context) + getRegisterValueSigned(memory.reg[1], context) + memory.displacement);
+    // TODO(TB): is using alginCast here okay if not aligned? if index is odd?
+    return @ptrCast(@alignCast(&context.memory[index]));
+}
+
 fn decodeImmToReg(instruction_type: InstructionType, context: *const Context) Instruction {
     const data = context.memory[0..];
     const index = context.register.named_word.ip;
@@ -739,20 +803,20 @@ fn print(writer: std.fs.File.Writer, instruction: Instruction) !void {
     const operand_1_label = getOperandLabel(instruction.operand[0], &operand_buffer[0]);
     const instruction_type_string = getInstructionTypeString(instruction.type);
     if (instruction.operand[1].type == .none) {
-        try writer.print("{s} {s}\n", .{
+        try writer.print("{s} {s}", .{
             instruction_type_string,
             operand_1_label,
         });
     } else {
         if (instruction.operand[0].type == .memory and instruction.operand[1].type == .immediate) {
-            try writer.print("{s} {s} {s}, {s}\n", .{
+            try writer.print("{s} {s} {s}, {s}", .{
                 instruction_type_string,
                 if (instruction.wide) "word" else "byte",
                 operand_1_label,
                 getOperandLabel(instruction.operand[1], &operand_buffer[1]),
             });
         } else {
-            try writer.print("{s} {s}, {s}\n", .{
+            try writer.print("{s} {s}, {s}", .{
                 instruction_type_string,
                 operand_1_label,
                 getOperandLabel(instruction.operand[1], &operand_buffer[1]),
@@ -766,7 +830,7 @@ fn printWithLabels(writer: std.fs.File.Writer, instruction: Instruction, byte_in
     if (maybe_jump_ip_inc8) |jump_ip_inc8| {
         const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + jump_ip_inc8)) + instruction.size;
         const index: usize = findValueIndex(labels, label_byte_index).?;
-        try writer.print("{s} test_label{d}\n", .{getInstructionTypeString(instruction.type), index});
+        try writer.print("{s} test_label{d}", .{getInstructionTypeString(instruction.type), index});
     } else {
         try print(writer, instruction);
     }
@@ -800,26 +864,151 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, c
         try printLabel(writer, byte_index, &next_label_index, labels);
 
         try printWithLabels(writer, instruction, byte_index, labels);
+        try writer.print("\n", .{});
 
         byte_index += instruction.size;
     }
     try printLabel(writer, byte_index, &next_label_index, labels);
 }
 
+fn getDestOperandBytePtr(operand: Operand, context: *Context) *u8 {
+    switch (operand.type) {
+        .register => |data| {
+            std.debug.assert(data.size == .byte);
+            return getRegisterBytePtr(data, context);
+        },
+        .memory => |data| {
+            return getMemoryBytePtr(data, context);
+        },
+        else => unreachable,
+    }
+}
+
+fn getDestOperandWordPtr(operand: Operand, context: *Context) *u16 {
+    switch (operand.type) {
+        .register => |data| {
+            std.debug.assert(data.size == .word);
+            return getRegisterWordPtr(data, context);
+        },
+        .memory => |data| {
+            return getMemoryWordPtr(data, context);
+        },
+        else => unreachable,
+    }
+}
+
+fn getSrcOperandByteValue(operand: Operand, context: *Context) u8 {
+    switch (operand.type) {
+        .register => |data| {
+            std.debug.assert(data.size == .byte);
+            return getRegisterBytePtr(data, context).*;
+        },
+        .memory => |data| {
+            return getMemoryBytePtr(data, context).*;
+        },
+        .immediate => |data| {
+            return @intCast(data);
+        },
+        else => unreachable,
+    }
+}
+
+fn getSrcOperandWordValue(operand: Operand, context: *Context) u16 {
+    switch (operand.type) {
+        .register => |data| {
+            std.debug.assert(data.size == .word);
+            return getRegisterWordPtr(data, context).*;
+        },
+        .memory => |data| {
+            return getMemoryWordPtr(data, context).*;
+        },
+        .immediate => |data| {
+            return data;
+        },
+        else => unreachable,
+    }
+}
+
+fn simulateInstruction(instruction: Instruction, context: *Context) void {
+    context.register.named_word.ip += instruction.size;
+
+    switch (instruction.type) {
+        .mov => {
+            if (instruction.wide) {
+                const dest = getDestOperandWordPtr(instruction.operand[0], context);
+                dest.* = getSrcOperandWordValue(instruction.operand[1], context);
+            } else {
+                const dest = getDestOperandBytePtr(instruction.operand[0], context);
+                dest.* = getSrcOperandByteValue(instruction.operand[1], context);
+            }
+        },
+        else => unreachable,
+    }
+}
+
+fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
+    _ = try writer.print("\n", .{});
+    while (context.register.named_word.ip < context.program_size) {
+        const instruction = decode(context).?;
+        try print(writer, instruction);
+        switch (instruction.type) {
+            .mov => {
+                const old_value: u16 = getDestOperandWordPtr(instruction.operand[0], context).*;
+                simulateInstruction(instruction, context);
+                const new_value: u16 = getDestOperandWordPtr(instruction.operand[0], context).*;
+                var dest_label_buffer: [32]u8 = undefined;
+                const dest_label = getOperandLabel(instruction.operand[0], &dest_label_buffer);
+                _ = try writer.print(" ; {s}:0x{X}->0x{X}\n", .{dest_label, old_value, new_value});
+            },
+            else => unreachable,
+        }
+    }
+    _ = try writer.print("\n", .{});
+    try printRegisters(writer, context);
+}
+
+fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
+    _ = try writer.print("; Final registers:\n", .{});
+    _ = try writer.print(";      ax: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ax});
+    _ = try writer.print(";      bx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bx});
+    _ = try writer.print(";      cx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.cx});
+    _ = try writer.print(";      dx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.dx});
+    _ = try writer.print(";      sp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.sp});
+    _ = try writer.print(";      bp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bp});
+    _ = try writer.print(";      si: 0x{X:0>4} ({0d})\n", .{context.register.named_word.si});
+    _ = try writer.print(";      di: 0x{X:0>4} ({0d})\n", .{context.register.named_word.di});
+}
+
 pub fn main() !void {
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = allocator.allocator();
     const args = try std.process.argsAlloc(gpa);
-    if (args.len != 2) {
-        @panic("you must provide exactly 1 command line argument, the name of the file to disassemble\n");
+    var file_name: []u8 = &.{};
+    var exec: bool = false;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "-exec")) {
+            exec = true;
+        } else {
+            file_name = arg;
+        }
     }
-    const file_name = args[1];
+    if (file_name.len == 0) {
+        @panic("you must provide a file to decode as a command line argument");
+    }
     const file = try std.fs.cwd().openFile(file_name, .{});
-    var out = std.io.getStdOut();
-    const writer = out.writer();
+    const out = std.io.getStdOut().writer();
+    // TODO(TB): use buffered writer
+    //var bw = std.io.bufferedWriter(out);
+    //const writer = bw.writer();
+    //try bw.flush(); // don't forget to flush!
+
     var context: *Context = try gpa.create(Context);
     defer gpa.destroy(context);
     context.init();
     context.program_size = @intCast(try file.read(&context.memory));
-    try decodeAndPrintAll(gpa, writer, context);
+    if (exec) {
+        try simulateAndPrintAll(out, context);
+    } else {
+        try decodeAndPrintAll(gpa, out, context);
+    }
 }
