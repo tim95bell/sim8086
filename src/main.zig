@@ -75,14 +75,13 @@ const Register = struct {
 
     index: RegisterIndex,
     offset: RegisterOffset,
-    size: RegisterSize,
+    size: Size,
 };
 
 const Memory = struct {
     // TODO(TB): should displacement be stored sepertely for word and byte?
     displacement: i16,
-    // TODO(TB): displacement_size shouldnt really be here
-    displacement_size: u8,
+    size: Size,
     reg: [2]Register,
 };
 
@@ -96,6 +95,10 @@ const RegisterIndex = enum {
     si,
     di,
     ip,
+    cs,
+    ds,
+    ss,
+    es,
     none,
 };
 
@@ -104,7 +107,7 @@ const RegisterOffset = enum(u8) {
     byte = 1,
 };
 
-const RegisterSize = enum(u8) {
+const Size = enum(u8) {
     byte = 1,
     word = 2,
 };
@@ -123,7 +126,7 @@ fn getRegisterLabel(register: Register, buffer: []u8) []u8 {
     std.debug.assert(buffer.len >= 2);
     switch (register.index) {
         .a, .b, .c, .d => {
-            // TODO(TB): getGeneralPurposeRegisterLabelLetter is doing duplicated worrk here
+            // TODO(TB): getGeneralPurposeRegisterLabelLetter is doing duplicated work here
             buffer[0] = getGeneralPurposeRegisterLabelLetter(register.index);
             if (register.offset == .none) {
                 if (register.size == .byte) {
@@ -157,6 +160,22 @@ fn getRegisterLabel(register: Register, buffer: []u8) []u8 {
         .ip => {
             buffer[0] = 'i';
             buffer[1] = 'p';
+        },
+        .cs => {
+            buffer[0] = 'c';
+            buffer[1] = 's';
+        },
+        .ds => {
+            buffer[0] = 'd';
+            buffer[1] = 's';
+        },
+        .ss => {
+            buffer[0] = 's';
+            buffer[1] = 's';
+        },
+        .es => {
+            buffer[0] = 'e';
+            buffer[1] = 's';
         },
         .none => {
             return buffer[0..0];
@@ -334,6 +353,10 @@ const Context = struct {
             si: u16,
             di: u16,
             ip: u16,
+            cs: u16,
+            ds: u16,
+            ss: u16,
+            es: u16,
         },
         named_byte: extern struct {
             al: u8,
@@ -345,8 +368,8 @@ const Context = struct {
             dl: u8,
             dh: u8,
         },
-        byte: [@typeInfo(RegisterIndex).Enum.fields.len][2]u8,
-        word: [@typeInfo(RegisterIndex).Enum.fields.len]u16,
+        byte: [@typeInfo(RegisterIndex).Enum.fields.len - 1][2]u8,
+        word: [@typeInfo(RegisterIndex).Enum.fields.len - 1]u16,
     },
 
     fn init(self: *Context) void {
@@ -408,6 +431,18 @@ const Context = struct {
         std.debug.assert(@as(u16, self.register.byte[8][0]) | (@as(u16, self.register.byte[8][1]) << 8) == self.register.named_word.ip);
         std.debug.assert(@as(u16, self.register.byte[8][0]) | (@as(u16, self.register.byte[8][1]) << 8) == self.register.word[8]);
 
+        std.debug.assert(@as(u16, self.register.byte[9][0]) | (@as(u16, self.register.byte[9][1]) << 8) == self.register.named_word.cs);
+        std.debug.assert(@as(u16, self.register.byte[9][0]) | (@as(u16, self.register.byte[9][1]) << 8) == self.register.word[9]);
+
+        std.debug.assert(@as(u16, self.register.byte[10][0]) | (@as(u16, self.register.byte[10][1]) << 8) == self.register.named_word.ds);
+        std.debug.assert(@as(u16, self.register.byte[10][0]) | (@as(u16, self.register.byte[10][1]) << 8) == self.register.word[10]);
+
+        std.debug.assert(@as(u16, self.register.byte[11][0]) | (@as(u16, self.register.byte[11][1]) << 8) == self.register.named_word.ss);
+        std.debug.assert(@as(u16, self.register.byte[11][0]) | (@as(u16, self.register.byte[11][1]) << 8) == self.register.word[11]);
+
+        std.debug.assert(@as(u16, self.register.byte[12][0]) | (@as(u16, self.register.byte[12][1]) << 8) == self.register.named_word.es);
+        std.debug.assert(@as(u16, self.register.byte[12][0]) | (@as(u16, self.register.byte[12][1]) << 8) == self.register.word[12]);
+
         // TODO(TB): zero out memory?
         @memset(&self.register.word, 0);
     }
@@ -416,25 +451,30 @@ const Context = struct {
 fn getRegisterSlice(register: Register, context: *const Context) []u8 {
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
     return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)..@intFromEnum(register.offset) + @intFromEnum(register.size)];
 }
 
 fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
     if (register.size == .byte) {
+        std.debug.assert(register.index != .none);
         return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
     } else {
         std.debug.assert(register.size == .word);
         std.debug.assert(register.offset == .none);
+        std.debug.assert(register.index != .none);
         return context.register.word[@intFromEnum(register.index)];
     }
 }
 
 fn getRegisterValueSigned(register: Register, context: *const Context) i16 {
     if (register.size == .byte) {
+        std.debug.assert(register.index != .none);
         return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
     } else {
         std.debug.assert(register.size == .word);
         std.debug.assert(register.offset == .none);
+        std.debug.assert(register.index != .none);
         return @intCast(context.register.word[@intFromEnum(register.index)]);
     }
 }
@@ -443,6 +483,7 @@ fn getRegisterBytePtr(register: Register, context: *Context) *u8 {
     std.debug.assert(register.size == .byte);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
     return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
 }
 
@@ -450,6 +491,7 @@ fn getRegisterByteConstPtr(register: Register, context: *const Context) *const u
     std.debug.assert(register.size == .byte);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
     return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
 }
 
@@ -457,6 +499,12 @@ fn getRegisterWordPtr(register: Register, context: *Context) *u16 {
     std.debug.assert(register.size == .word);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
+    return &context.register.word[@intFromEnum(register.index)];
+}
+
+fn getRegisterForceWordPtr(register: Register, context: *Context) *u16 {
+    std.debug.assert(register.index != .none);
     return &context.register.word[@intFromEnum(register.index)];
 }
 
@@ -464,6 +512,7 @@ fn getRegisterWordConstPtr(register: Register, context: *const Context) *const u
     std.debug.assert(register.size == .word);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
     return &context.register.word[@intFromEnum(register.index)];
 }
 
@@ -535,12 +584,13 @@ fn decodeRegToFromRegMem(instruction_type: InstructionType, context: *const Cont
         instruction.size = 2;
     } else {
         // mod = 00, 01, or 10
+        var displacement_size: u8 = undefined;
         instruction.operand[rm_operand_index] = .{
             .type = .{
-                .memory = createMem(mod, rm, displacement),
+                .memory = createMem(mod, rm, w != 0, displacement, &displacement_size),
             },
         };
-        instruction.size = 2 + instruction.operand[rm_operand_index].type.memory.displacement_size;
+        instruction.size = 2 + displacement_size;
     }
     return instruction;
 }
@@ -622,21 +672,61 @@ fn decodeImmToRegMem(instruction_type: InstructionType, context: *const Context,
     } else {
         // imm to mem
         const displacement: [*]const u8 = (&context.memory).ptr + context.register.named_word.ip + 2;
+        // TODO(TB): clean up this function, should not be 2 displacement_size
+        var displacement_size_2: u8 = undefined;
         instruction.operand[0].type = .{
-            .memory = createMem(mod, rm, displacement),
+            .memory = createMem(mod, rm, w != 0, displacement, &displacement_size_2),
         };
-        instruction.size = instruction.operand[0].type.memory.displacement_size + @as(u8, if (wide_immediate) 4 else 3);
+        instruction.size = displacement_size_2 + @as(u8, if (wide_immediate) 4 else 3);
     }
     return instruction;
 }
 
-fn createMem(mod: u2, rm: u3, displacement: [*]const u8) Memory {
+fn decodeRegMemToFromSegmentRegister(comptime d: bool, context: *const Context) Instruction {
+    const i = context.register.named_word.ip;
+    const mod: u2 = @intCast(context.memory[i + 1] >> 6);
+    std.debug.assert((context.memory[i + 1] & 0b00100000) == 0);
+    const sr: u2 = @intCast((context.memory[i + 1] >> 3) & 0b11);
+    const rm: u3 = @intCast(context.memory[i + 1] & 0b111);
+    const displacement = (&context.memory).ptr + 2;
+    var displacement_size: u8 = undefined;
+    var instruction: Instruction = .{
+        .type = .mov,
+        .address = @intCast(i),
+        .operand = undefined,
+        .size = undefined,
+        .wide = true,
+    };
+    const sr_index = if (d) 0 else 1;
+    const rm_index = if (d) 1 else 0;
+    instruction.operand[rm_index] = createRm(mod, rm, 1, displacement, &displacement_size);
+    instruction.operand[sr_index] = .{
+        .type = .{
+            .register = .{
+                .index = switch (sr) {
+                    0b00 => .es,
+                    0b01 => .cs,
+                    0b10 => .ss,
+                    0b11 => .ds,
+                },
+                .size = .word,
+                .offset = .none,
+            },
+        },
+    };
+    instruction.size = 2 + displacement_size;
+    return instruction;
+}
+
+fn createMem(mod: u2, rm: u3, w: bool, displacement: [*]const u8, displacement_size_out: *u8) Memory {
+    std.debug.assert(mod != 0b11);
     const displacement_only = mod == 0b00 and rm == 0b110;
     const displacement_size = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
+    displacement_size_out.* = displacement_size;
     std.debug.assert(displacement_size == 0 or displacement_size == 1 or displacement_size == 2);
     var result: Memory = .{
         .displacement = if (displacement_size > 0) extractSignedWord(displacement, displacement_size == 2) else 0,
-        .displacement_size = displacement_size,
+        .size = if (w) .word else .byte,
         .reg = .{
             .{
                 .index = undefined,
@@ -687,6 +777,15 @@ fn createMem(mod: u2, rm: u3, displacement: [*]const u8) Memory {
     return result;
 }
 
+fn createRm(mod: u2, rm: u3, w: u1, displacement: [*]const u8, displacement_size_out: *u8) Operand {
+    if (mod == 0b11) {
+        displacement_size_out.* = 0;
+        return .{ .type = .{ .register = regFieldEncoding(w, rm) } };
+    } else {
+        return .{ .type = .{ .memory = createMem(mod, rm, w != 0, displacement, displacement_size_out) } };
+    }
+}
+
 fn decode(context: *const Context) ?Instruction {
     const data = context.memory[0..];
     const i = context.register.named_word.ip;
@@ -726,12 +825,18 @@ fn decode(context: *const Context) ?Instruction {
                     Register.none,
                     Register.none,
                 },
+                .size = if (wide) .word else .byte,
                 // TODO(TB): displacement in this case should be unsigned?
                 .displacement = extractSignedWord(data.ptr + i + 1, true),
-                .displacement_size = 2,
             },
         };
         return instruction;
+    } else if ((data[i] & 0b11111111) == 0b10001110) {
+        // register/memory to segment register
+        return decodeRegMemToFromSegmentRegister(true, context);
+    } else if ((data[i] & 0b11111111) == 0b10001100) {
+        // segment register to register/memory
+        return decodeRegMemToFromSegmentRegister(false, context);
     } else if ((data[i] & 0b11000100) == 0b00000000) {
         // add/sub/cmp reg/mem to/from reg
         return decodeAddSubCmpRegToFromRegMem(context);
@@ -871,6 +976,16 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, c
     try printLabel(writer, byte_index, &next_label_index, labels);
 }
 
+fn getDestOperandValue(operand: Operand, context: *Context) u16 {
+    return switch (operand.type) {
+        .register => |data| if (data.size == .word) getRegisterWordPtr(data, context).*
+            else getRegisterBytePtr(data, context).*,
+        .memory => |data| if (data.size == .word) getMemoryWordPtr(data, context).*
+            else getMemoryBytePtr(data, context).*,
+        else => unreachable,
+    };
+}
+
 fn getDestOperandBytePtr(operand: Operand, context: *Context) *u8 {
     switch (operand.type) {
         .register => |data| {
@@ -953,11 +1068,24 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
         try print(writer, instruction);
         switch (instruction.type) {
             .mov => {
-                const old_value: u16 = getDestOperandWordPtr(instruction.operand[0], context).*;
+                const dest_operand_forced_wide_register = switch (instruction.operand[0].type) {
+                    .register => |data|
+                        @as(Operand, .{ .type =
+                            .{ .register =
+                                .{
+                                    .index = data.index,
+                                    .size = .word,
+                                    .offset = .none,
+                                },
+                            },
+                        }),
+                    else => instruction.operand[0],
+                };
+                const old_value: u16 = getDestOperandValue(dest_operand_forced_wide_register, context);
                 simulateInstruction(instruction, context);
-                const new_value: u16 = getDestOperandWordPtr(instruction.operand[0], context).*;
+                const new_value: u16 = getDestOperandValue(dest_operand_forced_wide_register, context);
                 var dest_label_buffer: [32]u8 = undefined;
-                const dest_label = getOperandLabel(instruction.operand[0], &dest_label_buffer);
+                const dest_label = getOperandLabel(dest_operand_forced_wide_register, &dest_label_buffer);
                 _ = try writer.print(" ; {s}:0x{X}->0x{X}\n", .{dest_label, old_value, new_value});
             },
             else => unreachable,
@@ -969,14 +1097,44 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
 
 fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
     _ = try writer.print("; Final registers:\n", .{});
-    _ = try writer.print(";      ax: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ax});
-    _ = try writer.print(";      bx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bx});
-    _ = try writer.print(";      cx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.cx});
-    _ = try writer.print(";      dx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.dx});
-    _ = try writer.print(";      sp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.sp});
-    _ = try writer.print(";      bp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bp});
-    _ = try writer.print(";      si: 0x{X:0>4} ({0d})\n", .{context.register.named_word.si});
-    _ = try writer.print(";      di: 0x{X:0>4} ({0d})\n", .{context.register.named_word.di});
+    if (context.register.named_word.ax != 0) {
+        _ = try writer.print(";      ax: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ax});
+    }
+    if (context.register.named_word.bx != 0) {
+        _ = try writer.print(";      bx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bx});
+    }
+    if (context.register.named_word.cx != 0) {
+        _ = try writer.print(";      cx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.cx});
+    }
+    if (context.register.named_word.dx != 0) {
+        _ = try writer.print(";      dx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.dx});
+    }
+    if (context.register.named_word.sp != 0) {
+        _ = try writer.print(";      sp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.sp});
+    }
+    if (context.register.named_word.bp != 0) {
+        _ = try writer.print(";      bp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bp});
+    }
+    if (context.register.named_word.si != 0) {
+        _ = try writer.print(";      si: 0x{X:0>4} ({0d})\n", .{context.register.named_word.si});
+    }
+    if (context.register.named_word.di != 0) {
+        _ = try writer.print(";      di: 0x{X:0>4} ({0d})\n", .{context.register.named_word.di});
+    }
+    // TODO(TB): Casey does not print ip, leaving it out so the diff can match
+    //_ = try writer.print(";      ip: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ip});
+    if (context.register.named_word.cs != 0) {
+        _ = try writer.print(";      cs: 0x{X:0>4} ({0d})\n", .{context.register.named_word.cs});
+    }
+    if (context.register.named_word.es != 0) {
+        _ = try writer.print(";      es: 0x{X:0>4} ({0d})\n", .{context.register.named_word.es});
+    }
+    if (context.register.named_word.ss != 0) {
+        _ = try writer.print(";      ss: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ss});
+    }
+    if (context.register.named_word.ds != 0) {
+        _ = try writer.print(";      ds: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ds});
+    }
 }
 
 pub fn main() !void {
