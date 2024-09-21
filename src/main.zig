@@ -338,6 +338,48 @@ fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *
     }
 }
 
+// TODO(TB): change this from index to the actual bit (e.g. change 3 to 8=0b1000, change 0 to 1=0b1)
+// NOTE(TB): enum names prefixed with `flag` because if is a keyword
+const FlagBitIndex = enum(u4) {
+    flag_cf = 0,
+    flag_pf = 2,
+    flag_af = 4,
+    flag_zf = 6,
+    flag_sf,
+    flag_tf,
+    flag_if,
+    flag_df,
+    flag_of,
+};
+
+// TODO(TB): how to replace uses of this with using comptime and type info?
+const all_flags: [@typeInfo(FlagBitIndex).Enum.fields.len]FlagBitIndex = .{
+    .flag_cf,
+    .flag_pf,
+    .flag_af,
+    .flag_zf,
+    .flag_sf,
+    .flag_tf,
+    .flag_if,
+    .flag_df,
+    .flag_of,
+};
+
+// TODO(TB): can this be a method on the enum?
+fn getFlagBitIndexLabel(flag: FlagBitIndex) u8 {
+    return switch (flag) {
+        .flag_cf => 'C',
+        .flag_pf => 'P',
+        .flag_af => 'A',
+        .flag_zf => 'Z',
+        .flag_sf => 'S',
+        .flag_tf => 'T',
+        .flag_if => 'I',
+        .flag_df => 'D',
+        .flag_of => 'O',
+    };
+}
+
 const Context = struct {
     memory: [1028 * 1028 * 1028]u8,
     program_size: u16,
@@ -371,6 +413,7 @@ const Context = struct {
         byte: [@typeInfo(RegisterIndex).Enum.fields.len - 1][2]u8,
         word: [@typeInfo(RegisterIndex).Enum.fields.len - 1]u16,
     },
+    flags: u16,
 
     fn init(self: *Context) void {
         self.memory = undefined;
@@ -445,8 +488,59 @@ const Context = struct {
 
         // TODO(TB): zero out memory?
         @memset(&self.register.word, 0);
+        self.flags = 0;
     }
 };
+
+fn hasAtLeastOneFlagSet(flags: u16) bool {
+    return flags != 0;
+}
+
+fn clearFlags(flags: *u16) void {
+    flags.* = 0;
+}
+
+fn setFlag(flags: *u16, flag: FlagBitIndex, value: bool) void {
+    flags.* &= ~(@as(u16, 1) << @intFromEnum(flag));
+    flags.* |= (@as(u16, if (value) 1 else 0) << @intFromEnum(flag));
+}
+
+fn testFlag(flags: u16, flag: FlagBitIndex) bool {
+    return ((flags >> @intFromEnum(flag)) & 0b1) != 0;
+}
+
+fn printFlags(flags: u16, buffer: []u8) []u8 {
+    std.debug.assert(buffer.len >= @typeInfo(FlagBitIndex).Enum.fields.len);
+    var len: u8 = 0;
+    for (all_flags) |flag| {
+        if (testFlag(flags, flag)) {
+            buffer[len] = getFlagBitIndexLabel(flag);
+            len += 1;
+        }
+    }
+    return buffer[0..len];
+}
+
+fn parity(x: u8) bool {
+    return (
+        (x & 0b1)
+        + ((x >> 1) & 0b1)
+        + ((x >> 2) & 0b1)
+        + ((x >> 3) & 0b1)
+        + ((x >> 4) & 0b1)
+        + ((x >> 5) & 0b1)
+        + ((x >> 6) & 0b1)
+        + ((x >> 7) & 0b1)
+    ) % 2 == 0;
+}
+
+fn updateFlags(flags: *u16, old_value: i16, new_value: i16) void {
+    // TODO(TB): dont need old_value?
+    _ = old_value;
+    setFlag(flags, .flag_zf, new_value == 0);
+    setFlag(flags, .flag_sf, new_value < 0);
+    setFlag(flags, .flag_pf, parity(@intCast(new_value & 0b11111111)));
+}
 
 fn getRegisterSlice(register: Register, context: *const Context) []u8 {
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
@@ -1047,6 +1141,7 @@ fn getSrcOperandWordValue(operand: Operand, context: *Context) u16 {
 fn simulateInstruction(instruction: Instruction, context: *Context) void {
     context.register.named_word.ip += instruction.size;
 
+    // TODO(TB): make a way to perform all these operations for wide or non wide instructions, preventing needing to repeat so much code
     switch (instruction.type) {
         .mov => {
             if (instruction.wide) {
@@ -1055,6 +1150,49 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
             } else {
                 const dest = getDestOperandBytePtr(instruction.operand[0], context);
                 dest.* = getSrcOperandByteValue(instruction.operand[1], context);
+            }
+        },
+        .add => {
+            if (instruction.wide) {
+                const dest = getDestOperandWordPtr(instruction.operand[0], context);
+                const old_value: i16 = @intCast(dest.*);
+                dest.* += getSrcOperandWordValue(instruction.operand[1], context);
+                const new_value: i16 = @intCast(dest.*);
+                updateFlags(&context.flags, old_value, new_value);
+            } else {
+                const dest = getDestOperandBytePtr(instruction.operand[0], context);
+                const old_value = dest.*;
+                dest.* += getSrcOperandByteValue(instruction.operand[1], context);
+                const new_value = dest.*;
+                updateFlags(&context.flags, old_value, new_value);
+            }
+        },
+        .sub => {
+            if (instruction.wide) {
+                const dest = getDestOperandWordPtr(instruction.operand[0], context);
+                const old_value: i16 = @bitCast(dest.*);
+                dest.* -= getSrcOperandWordValue(instruction.operand[1], context);
+                const new_value: i16 = @bitCast(dest.*);
+                updateFlags(&context.flags, old_value, new_value);
+            } else {
+                const dest = getDestOperandBytePtr(instruction.operand[0], context);
+                const old_value = dest.*;
+                dest.* -= getSrcOperandByteValue(instruction.operand[1], context);
+                const new_value = dest.*;
+                updateFlags(&context.flags, old_value, new_value);
+            }
+        },
+        .cmp => {
+            if (instruction.wide) {
+                const dest = getDestOperandWordPtr(instruction.operand[0], context);
+                const old_value: i16 = @bitCast(dest.*);
+                const new_value: i16 = @bitCast(dest.* - getSrcOperandWordValue(instruction.operand[1], context));
+                updateFlags(&context.flags, old_value, new_value);
+            } else {
+                const dest = getDestOperandBytePtr(instruction.operand[0], context);
+                const old_value = dest.*;
+                const new_value = dest.* - getSrcOperandByteValue(instruction.operand[1], context);
+                updateFlags(&context.flags, old_value, new_value);
             }
         },
         else => unreachable,
@@ -1067,7 +1205,7 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
         const instruction = decode(context).?;
         try print(writer, instruction);
         switch (instruction.type) {
-            .mov => {
+            .mov, .add, .cmp, .sub => {
                 const dest_operand_forced_wide_register = switch (instruction.operand[0].type) {
                     .register => |data|
                         @as(Operand, .{ .type =
@@ -1082,58 +1220,76 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
                     else => instruction.operand[0],
                 };
                 const old_value: u16 = getDestOperandValue(dest_operand_forced_wide_register, context);
+                const flags_before = context.flags;
                 simulateInstruction(instruction, context);
                 const new_value: u16 = getDestOperandValue(dest_operand_forced_wide_register, context);
                 var dest_label_buffer: [32]u8 = undefined;
                 const dest_label = getOperandLabel(dest_operand_forced_wide_register, &dest_label_buffer);
-                _ = try writer.print(" ; {s}:0x{X}->0x{X}\n", .{dest_label, old_value, new_value});
+                _ = try writer.print(" ;", .{});
+                if (old_value != new_value) {
+                    _ = try writer.print(" {s}:0x{x}->0x{x}", .{dest_label, old_value, new_value});
+                }
+                if (flags_before != context.flags) {
+                    var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+                    const flags_before_string = printFlags(flags_before, &flags_before_buffer);
+                    var flags_after_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+                    const flags_after_string = printFlags(context.flags, &flags_after_buffer);
+                    _ = try writer.print(" flags:{s}->{s}", .{flags_before_string, flags_after_string});
+                }
+                _ = try writer.print("\n", .{});
             },
             else => unreachable,
         }
     }
     _ = try writer.print("\n", .{});
     try printRegisters(writer, context);
+
+    if (hasAtLeastOneFlagSet(context.flags)) {
+        var flags_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+        const flags = printFlags(context.flags, &flags_buffer);
+        _ = try writer.print(";   flags: {s}\n", .{flags});
+    }
 }
 
 fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
     _ = try writer.print("; Final registers:\n", .{});
     if (context.register.named_word.ax != 0) {
-        _ = try writer.print(";      ax: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ax});
+        _ = try writer.print(";      ax: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ax});
     }
     if (context.register.named_word.bx != 0) {
-        _ = try writer.print(";      bx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bx});
+        _ = try writer.print(";      bx: 0x{x:0>4} ({0d})\n", .{context.register.named_word.bx});
     }
     if (context.register.named_word.cx != 0) {
-        _ = try writer.print(";      cx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.cx});
+        _ = try writer.print(";      cx: 0x{x:0>4} ({0d})\n", .{context.register.named_word.cx});
     }
     if (context.register.named_word.dx != 0) {
-        _ = try writer.print(";      dx: 0x{X:0>4} ({0d})\n", .{context.register.named_word.dx});
+        _ = try writer.print(";      dx: 0x{x:0>4} ({0d})\n", .{context.register.named_word.dx});
     }
     if (context.register.named_word.sp != 0) {
-        _ = try writer.print(";      sp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.sp});
+        _ = try writer.print(";      sp: 0x{x:0>4} ({0d})\n", .{context.register.named_word.sp});
     }
     if (context.register.named_word.bp != 0) {
-        _ = try writer.print(";      bp: 0x{X:0>4} ({0d})\n", .{context.register.named_word.bp});
+        _ = try writer.print(";      bp: 0x{x:0>4} ({0d})\n", .{context.register.named_word.bp});
     }
     if (context.register.named_word.si != 0) {
-        _ = try writer.print(";      si: 0x{X:0>4} ({0d})\n", .{context.register.named_word.si});
+        _ = try writer.print(";      si: 0x{x:0>4} ({0d})\n", .{context.register.named_word.si});
     }
     if (context.register.named_word.di != 0) {
-        _ = try writer.print(";      di: 0x{X:0>4} ({0d})\n", .{context.register.named_word.di});
+        _ = try writer.print(";      di: 0x{x:0>4} ({0d})\n", .{context.register.named_word.di});
     }
     // TODO(TB): Casey does not print ip, leaving it out so the diff can match
-    //_ = try writer.print(";      ip: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ip});
+    //_ = try writer.print(";      ip: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ip});
     if (context.register.named_word.cs != 0) {
-        _ = try writer.print(";      cs: 0x{X:0>4} ({0d})\n", .{context.register.named_word.cs});
+        _ = try writer.print(";      cs: 0x{x:0>4} ({0d})\n", .{context.register.named_word.cs});
     }
     if (context.register.named_word.es != 0) {
-        _ = try writer.print(";      es: 0x{X:0>4} ({0d})\n", .{context.register.named_word.es});
+        _ = try writer.print(";      es: 0x{x:0>4} ({0d})\n", .{context.register.named_word.es});
     }
     if (context.register.named_word.ss != 0) {
-        _ = try writer.print(";      ss: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ss});
+        _ = try writer.print(";      ss: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ss});
     }
     if (context.register.named_word.ds != 0) {
-        _ = try writer.print(";      ds: 0x{X:0>4} ({0d})\n", .{context.register.named_word.ds});
+        _ = try writer.print(";      ds: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ds});
     }
 }
 
