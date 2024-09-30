@@ -35,6 +35,12 @@ const InstructionType = enum {
     jcxz,
 };
 
+// ReadWriteAddress : a pointer to a register or memory, and the width
+const ReadWriteAddress = struct {
+    data: [*]u8,
+    wide: bool,
+};
+
 const Operand = struct {
     const Type = enum {
         none,
@@ -205,7 +211,7 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
         .memory => |data| {
             if (data.reg[0].index == .none) {
                 std.debug.assert(data.reg[1].index == .none);
-                return std.fmt.bufPrint(buffer, "[{d}]", .{@as(u16, @bitCast(data.displacement))}) catch unreachable;
+                return std.fmt.bufPrint(buffer, "[{d}]", .{data.displacement}) catch unreachable;
             } else if (data.reg[1].index == .none) {
                 var reg_label_buffer: [2]u8 = undefined;
                 if (data.displacement == 0) {
@@ -287,7 +293,7 @@ fn extractModRegRm(data: u8) struct { u2, u3, u3 } {
 }
 
 fn extractSignedWord(data: [*]const u8, wide: bool) i16 {
-    return if (wide) @as(i16, data[0]) | @as(i16, @bitCast(@as(u16, data[1]) << 8)) else @as(i16, @as(i8, @bitCast(data[0])));
+    return if (wide) @as(i16, @bitCast(data[0] | (@as(u16, data[1]) << 8))) else @as(i16, @as(i8, @bitCast(data[0])));
 }
 
 fn extractUnsignedWord(data: [*]const u8, wide: bool) u16 {
@@ -534,19 +540,16 @@ fn parity(x: u8) bool {
     ) % 2 == 0;
 }
 
-fn updateFlags(flags: *u16, old_value: i16, new_value: i16) void {
-    // TODO(TB): dont need old_value?
-    _ = old_value;
+fn updateFlags(flags: *u16, old_value: u16, new_value: u16, wide: bool, did_overflow: bool) void {
     setFlag(flags, .flag_zf, new_value == 0);
-    setFlag(flags, .flag_sf, new_value < 0);
-    setFlag(flags, .flag_pf, parity(@intCast(new_value & 0b11111111)));
-}
-
-fn getRegisterSlice(register: Register, context: *const Context) []u8 {
-    std.debug.assert((register.offset != .byte) or (register.size == .byte));
-    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
-    std.debug.assert(register.index != .none);
-    return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)..@intFromEnum(register.offset) + @intFromEnum(register.size)];
+    setFlag(flags, .flag_sf, @as(i16, @bitCast(new_value)) < 0);
+    setFlag(flags, .flag_pf, parity(@truncate(new_value)));
+    setFlag(flags, .flag_of, did_overflow);
+    // TODO(TB): do cf and af need to consider if it is addition or subtraction?
+    const cf: bool = if (wide) ((old_value & (1 << 15)) != (new_value & (1 << 15))) else ((old_value & (1 << 7)) != (new_value & (1 << 7)));
+    const af: bool = (old_value & (1 << 3)) != (new_value & (1 << 3));
+    setFlag(flags, .flag_cf, cf);
+    setFlag(flags, .flag_af, af);
 }
 
 fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
@@ -564,66 +567,13 @@ fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
 fn getRegisterValueSigned(register: Register, context: *const Context) i16 {
     if (register.size == .byte) {
         std.debug.assert(register.index != .none);
-        return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
+        return @as(i8, @bitCast(context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)]));
     } else {
         std.debug.assert(register.size == .word);
         std.debug.assert(register.offset == .none);
         std.debug.assert(register.index != .none);
-        return @intCast(context.register.word[@intFromEnum(register.index)]);
+        return @bitCast(context.register.word[@intFromEnum(register.index)]);
     }
-}
-
-fn getRegisterBytePtr(register: Register, context: *Context) *u8 {
-    std.debug.assert(register.size == .byte);
-    std.debug.assert((register.offset != .byte) or (register.size == .byte));
-    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
-    std.debug.assert(register.index != .none);
-    return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
-}
-
-fn getRegisterByteConstPtr(register: Register, context: *const Context) *const u8 {
-    std.debug.assert(register.size == .byte);
-    std.debug.assert((register.offset != .byte) or (register.size == .byte));
-    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
-    std.debug.assert(register.index != .none);
-    return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
-}
-
-fn getRegisterWordPtr(register: Register, context: *Context) *u16 {
-    std.debug.assert(register.size == .word);
-    std.debug.assert((register.offset != .byte) or (register.size == .byte));
-    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
-    std.debug.assert(register.index != .none);
-    return &context.register.word[@intFromEnum(register.index)];
-}
-
-fn getRegisterForceWordPtr(register: Register, context: *Context) *u16 {
-    std.debug.assert(register.index != .none);
-    return &context.register.word[@intFromEnum(register.index)];
-}
-
-fn getRegisterWordConstPtr(register: Register, context: *const Context) *const u16 {
-    std.debug.assert(register.size == .word);
-    std.debug.assert((register.offset != .byte) or (register.size == .byte));
-    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
-    std.debug.assert(register.index != .none);
-    return &context.register.word[@intFromEnum(register.index)];
-}
-
-fn getMemoryBytePtr(memory: Memory, context: *Context) *u8 {
-    // TODO(TB): check for overflow
-    // TODO(TB): what type to use for index?
-    const index: u32 = @intCast(getRegisterValueSigned(memory.reg[0], context) + getRegisterValueSigned(memory.reg[1], context) + memory.displacement);
-    return &context.memory[index];
-}
-
-fn getMemoryWordPtr(memory: Memory, context: *Context) *u16 {
-    // TODO(TB): check for overflow
-    // TODO(TB): what type to use for index?
-    // TODO(TB): treat displacement as unsigned if both regiter types are none
-    const index: u32 = @intCast(getRegisterValueSigned(memory.reg[0], context) + getRegisterValueSigned(memory.reg[1], context) + memory.displacement);
-    // TODO(TB): is using alginCast here okay if not aligned? if index is odd?
-    return @ptrCast(@alignCast(&context.memory[index]));
 }
 
 fn decodeImmToReg(instruction_type: InstructionType, context: *const Context) Instruction {
@@ -1070,66 +1020,51 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, c
     try printLabel(writer, byte_index, &next_label_index, labels);
 }
 
-fn getDestOperandValue(operand: Operand, context: *Context) u16 {
-    return switch (operand.type) {
-        .register => |data| if (data.size == .word) getRegisterWordPtr(data, context).*
-            else getRegisterBytePtr(data, context).*,
-        .memory => |data| if (data.size == .word) getMemoryWordPtr(data, context).*
-            else getMemoryBytePtr(data, context).*,
-        else => unreachable,
-    };
+fn getRegisterBytePtr(register: Register, context: *Context) *u8 {
+    std.debug.assert(register.size == .byte);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
+    return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
 }
 
-fn getDestOperandBytePtr(operand: Operand, context: *Context) *u8 {
-    switch (operand.type) {
-        .register => |data| {
-            std.debug.assert(data.size == .byte);
-            return getRegisterBytePtr(data, context);
-        },
-        .memory => |data| {
-            return getMemoryBytePtr(data, context);
-        },
-        else => unreachable,
-    }
+fn getRegisterBytePtrConst(register: Register, context: *const Context) *const u8 {
+    std.debug.assert(register.size == .byte);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
+    return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
 }
 
-fn getDestOperandWordPtr(operand: Operand, context: *Context) *u16 {
-    switch (operand.type) {
-        .register => |data| {
-            std.debug.assert(data.size == .word);
-            return getRegisterWordPtr(data, context);
-        },
-        .memory => |data| {
-            return getMemoryWordPtr(data, context);
-        },
-        else => unreachable,
-    }
+fn getRegisterWordPtr(register: Register, context: *Context) *u16 {
+    std.debug.assert(register.size == .word);
+    std.debug.assert(register.offset == .none);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
+    return &context.register.word[@intFromEnum(register.index)];
 }
 
-fn getSrcOperandByteValue(operand: Operand, context: *Context) u8 {
-    switch (operand.type) {
-        .register => |data| {
-            std.debug.assert(data.size == .byte);
-            return getRegisterBytePtr(data, context).*;
-        },
-        .memory => |data| {
-            return getMemoryBytePtr(data, context).*;
-        },
-        .immediate => |data| {
-            return @intCast(data);
-        },
-        else => unreachable,
-    }
+fn getRegisterWordPtrConst(register: Register, context: *const Context) *const u16 {
+    std.debug.assert(register.size == .word);
+    std.debug.assert(register.offset == .none);
+    std.debug.assert((register.offset != .byte) or (register.size == .byte));
+    std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
+    std.debug.assert(register.index != .none);
+    return &context.register.word[@intFromEnum(register.index)];
 }
 
-fn getSrcOperandWordValue(operand: Operand, context: *Context) u16 {
+fn getSrcOperandValue(operand: Operand, context: *Context) u16 {
     switch (operand.type) {
         .register => |data| {
-            std.debug.assert(data.size == .word);
-            return getRegisterWordPtr(data, context).*;
+            if (data.size == .byte) {
+                return getRegisterBytePtr(data, context).*;
+            } else {
+                return getRegisterWordPtr(data, context).*;
+            }
         },
         .memory => |data| {
-            return getMemoryWordPtr(data, context).*;
+            return read(createReadWriteAddressFromMemory(data, context));
         },
         .immediate => |data| {
             return data;
@@ -1138,62 +1073,162 @@ fn getSrcOperandWordValue(operand: Operand, context: *Context) u16 {
     }
 }
 
+fn getSrcOperandValueSigned(operand: Operand, context: *Context) i16 {
+    switch (operand.type) {
+        .register => |data| {
+            if (data.size == .byte) {
+                return @as(i8, @bitCast(getRegisterBytePtr(data, context).*));
+            } else {
+                return @bitCast(getRegisterWordPtr(data, context).*);
+            }
+        },
+        .memory => |data| {
+            return readSigned(createReadWriteAddressFromMemory(data, context));
+        },
+        .immediate => |data| {
+            return @bitCast(data);
+        },
+        else => unreachable,
+    }
+}
+
+fn write(src: ReadWriteAddress, new_value: u16) void {
+    src.data[0] = @intCast(new_value & 0b11111111);
+    std.debug.assert(src.wide or (new_value & 0b1111111100000000) == 0);
+    if (src.wide) {
+        src.data[1] = @intCast((new_value & 0b1111111100000000) >> 8);
+    }
+}
+
+fn read(src: ReadWriteAddress) u16 {
+    if (src.wide) {
+        return src.data[0] | (@as(u16, src.data[1]) << 8);
+    } else {
+        return src.data[0];
+    }
+}
+
+fn readSigned(src: ReadWriteAddress) i16 {
+    if (src.wide) {
+        return @bitCast(src.data[0] | (@as(u16, src.data[1]) << 8));
+    } else {
+        return @as(i8, @bitCast(src.data[0]));
+    }
+}
+
+fn getMemoryIndex(memory: Memory, context: *const Context) u32 {
+    // TODO(TB): handle negative index?
+    if (memory.reg[0].index == .none) {
+        // NOTE(TB): displacement is treated as unsigned when not adding to registers
+        return @intCast(@as(u16, @bitCast(memory.displacement)));
+    } else if (memory.reg[1].index == .none) {
+        const result: i32 = @as(i32, memory.displacement) + @as(i32, getRegisterValueSigned(memory.reg[0], context));
+        std.debug.assert(result > 0);
+        return @intCast(result);
+    } else {
+        const result: i32 = @as(i32, memory.displacement) + @as(i32, getRegisterValueSigned(memory.reg[0], context)) + @as(i32, getRegisterValueSigned(memory.reg[1], context));
+        std.debug.assert(result > 0);
+        return @intCast(result);
+    }
+}
+
+fn createReadWriteAddressFromMemory(memory: Memory, context: *Context) ReadWriteAddress {
+    const index: u32 = getMemoryIndex(memory, context);
+    return .{
+        .data = @ptrCast(&context.memory[index]),
+        .wide = memory.size == .word,
+    };
+}
+
+fn createReadWriteAddress(operand: Operand, context: *Context) ReadWriteAddress {
+    switch (operand.type) {
+        .register => |data| {
+            return .{
+                .data = @ptrCast(&context.register.byte[@intFromEnum(data.index)][@intFromEnum(data.offset)]),
+                .wide = data.size == .word,
+            };
+        },
+        .memory => |data| {
+            return createReadWriteAddressFromMemory(data, context);
+        },
+        else => unreachable,
+    }
+}
+
 fn simulateInstruction(instruction: Instruction, context: *Context) void {
     context.register.named_word.ip += instruction.size;
 
-    // TODO(TB): make a way to perform all these operations for wide or non wide instructions, preventing needing to repeat so much code
+    if (instruction.operand[0].type != .none) {
+        switch (instruction.operand[0].type) {
+            .register => |data| {
+                if (instruction.wide) {
+                    std.debug.assert(data.size == .word);
+                } else {
+                    std.debug.assert(data.size == .byte);
+                }
+            },
+            .memory => |data| {
+                if (instruction.wide) {
+                    std.debug.assert(data.size == .word);
+                } else {
+                    std.debug.assert(data.size == .byte);
+                }
+            },
+            else => {},
+        }
+
+        if (instruction.operand[1].type != .none) {
+            switch (instruction.operand[1].type) {
+                .register => |data| {
+                    if (instruction.wide) {
+                        std.debug.assert(data.size == .word);
+                    } else {
+                        std.debug.assert(data.size == .byte);
+                    }
+                },
+                .memory => |data| {
+                    if (instruction.wide) {
+                        std.debug.assert(data.size == .word);
+                    } else {
+                        std.debug.assert(data.size == .byte);
+                    }
+                },
+                else => {},
+            }
+        }
+    } else {
+        std.debug.assert(instruction.operand[1].type == .none);
+    }
+
     switch (instruction.type) {
         .mov => {
-            if (instruction.wide) {
-                const dest = getDestOperandWordPtr(instruction.operand[0], context);
-                dest.* = getSrcOperandWordValue(instruction.operand[1], context);
-            } else {
-                const dest = getDestOperandBytePtr(instruction.operand[0], context);
-                dest.* = getSrcOperandByteValue(instruction.operand[1], context);
-            }
+            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
+            const new_value: u16 = getSrcOperandValue(instruction.operand[1], context);
+            write(dst_address, new_value);
         },
         .add => {
-            if (instruction.wide) {
-                const dest = getDestOperandWordPtr(instruction.operand[0], context);
-                const old_value: i16 = @intCast(dest.*);
-                dest.* += getSrcOperandWordValue(instruction.operand[1], context);
-                const new_value: i16 = @intCast(dest.*);
-                updateFlags(&context.flags, old_value, new_value);
-            } else {
-                const dest = getDestOperandBytePtr(instruction.operand[0], context);
-                const old_value = dest.*;
-                dest.* += getSrcOperandByteValue(instruction.operand[1], context);
-                const new_value = dest.*;
-                updateFlags(&context.flags, old_value, new_value);
-            }
+            // TODO(TB): merge add and sub
+            // TODO(TB): handle overflow for byte values?
+            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
+            const old_dst_value: i16 = readSigned(dst_address);
+            const new_dst_value: i16, const did_overflow: u1 = @addWithOverflow(old_dst_value, getSrcOperandValueSigned(instruction.operand[1], context));
+            write(dst_address, @bitCast(new_dst_value));
+            std.debug.assert(new_dst_value == readSigned(dst_address));
+            updateFlags(&context.flags, @bitCast(old_dst_value), @bitCast(new_dst_value), instruction.wide, did_overflow != 0);
         },
         .sub => {
-            if (instruction.wide) {
-                const dest = getDestOperandWordPtr(instruction.operand[0], context);
-                const old_value: i16 = @bitCast(dest.*);
-                dest.* -= getSrcOperandWordValue(instruction.operand[1], context);
-                const new_value: i16 = @bitCast(dest.*);
-                updateFlags(&context.flags, old_value, new_value);
-            } else {
-                const dest = getDestOperandBytePtr(instruction.operand[0], context);
-                const old_value = dest.*;
-                dest.* -= getSrcOperandByteValue(instruction.operand[1], context);
-                const new_value = dest.*;
-                updateFlags(&context.flags, old_value, new_value);
-            }
+            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
+            const old_dst_value: i16 = readSigned(dst_address);
+            const new_dst_value: i16, const did_overflow: u1 = @subWithOverflow(old_dst_value, getSrcOperandValueSigned(instruction.operand[1], context));
+            write(dst_address, @bitCast(new_dst_value));
+            std.debug.assert(new_dst_value == readSigned(dst_address));
+            updateFlags(&context.flags, @bitCast(old_dst_value), @bitCast(new_dst_value), instruction.wide, did_overflow != 0);
         },
         .cmp => {
-            if (instruction.wide) {
-                const dest = getDestOperandWordPtr(instruction.operand[0], context);
-                const old_value: i16 = @bitCast(dest.*);
-                const new_value: i16 = @bitCast(dest.* - getSrcOperandWordValue(instruction.operand[1], context));
-                updateFlags(&context.flags, old_value, new_value);
-            } else {
-                const dest = getDestOperandBytePtr(instruction.operand[0], context);
-                const old_value = dest.*;
-                const new_value = dest.* - getSrcOperandByteValue(instruction.operand[1], context);
-                updateFlags(&context.flags, old_value, new_value);
-            }
+            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
+            const old_dst_value: i16 = readSigned(dst_address);
+            const new_dst_value: i16, const did_overflow: u1 = @subWithOverflow(old_dst_value, getSrcOperandValueSigned(instruction.operand[1], context));
+            updateFlags(&context.flags, @bitCast(old_dst_value), @bitCast(new_dst_value), instruction.wide, did_overflow != 0);
         },
         else => unreachable,
     }
@@ -1219,10 +1254,11 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
                         }),
                     else => instruction.operand[0],
                 };
-                const old_value: u16 = getDestOperandValue(dest_operand_forced_wide_register, context);
+                const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
+                const old_value: u16 = read(dst_address);
                 const flags_before = context.flags;
                 simulateInstruction(instruction, context);
-                const new_value: u16 = getDestOperandValue(dest_operand_forced_wide_register, context);
+                const new_value: u16 = read(dst_address);
                 var dest_label_buffer: [32]u8 = undefined;
                 const dest_label = getOperandLabel(dest_operand_forced_wide_register, &dest_label_buffer);
                 _ = try writer.print(" ;", .{});
