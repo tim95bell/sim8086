@@ -300,6 +300,12 @@ fn extractUnsignedWord(data: [*]const u8, wide: bool) u16 {
     return if (wide) data[0] | (@as(u16, data[1]) << 8) else data[0];
 }
 
+fn extractUnsignedWordSignExtend(data: [*]const u8, wide: bool, sign_extend: bool) u16 {
+    return if (wide)
+        (if (sign_extend) @bitCast(@as(i16, @as(i8, @bitCast(data[0])))) else data[0] | (@as(u16, data[1]) << 8))
+        else data[0];
+}
+
 fn getJumpIpInc8(instruction: Instruction) ?i8 {
     return switch (instruction.type) {
         .jnz, .je, .jl, .jle, .jb, .jbe, .jp, .jo, .js,
@@ -540,16 +546,38 @@ fn parity(x: u8) bool {
     ) % 2 == 0;
 }
 
-fn updateFlags(flags: *u16, old_value: u16, new_value: u16, wide: bool, did_overflow: bool) void {
+fn testBit(x: anytype, n: anytype) bool {
+    return @bitCast(@as(i1, @truncate((x >> n) & 1)));
+}
+
+fn getCarry(a: anytype, b: anytype, c: anytype, n: anytype) bool {
+    return if (testBit(a, n) != testBit(b, n)) !testBit(c, n)
+        else testBit(c, n);
+}
+
+fn add(operand: [2]Operand, wide: bool, context: *Context) void {
+    const dst_address: ReadWriteAddress = createReadWriteAddress(operand[0], context);
+    const old_dst_value: i17 = readSigned(dst_address);
+    const src_value: i17 = getSrcOperandValueSigned(operand[1], context);
+    const new_dst_value: i17 = old_dst_value + src_value;
+    write(dst_address, @bitCast(@as(i16, @truncate(new_dst_value))));
+    std.debug.assert(@as(i16, @truncate(new_dst_value)) == readSigned(dst_address));
+    updateFlags(&context.flags, @bitCast(new_dst_value), wide);
+    const significant_bit_index: u5 = if (wide) 15 else 7;
+    const carry_bit_index: u5 = significant_bit_index + 1;
+
+    const significant_bit_carry = getCarry(old_dst_value, src_value, new_dst_value, significant_bit_index);
+    const carry_bit_carry = getCarry(old_dst_value, src_value, new_dst_value, carry_bit_index);
+    setFlag(&context.flags, .flag_cf, carry_bit_carry);
+    setFlag(&context.flags, .flag_of, carry_bit_carry != significant_bit_carry);
+    setFlag(&context.flags, .flag_af, getCarry(old_dst_value, src_value, new_dst_value, 4));
+}
+
+fn updateFlags(flags: *u16, new_value: u17, wide: bool) void {
+    const significant_bit_index: u5 = if (wide) 15 else 7;
     setFlag(flags, .flag_zf, new_value == 0);
-    setFlag(flags, .flag_sf, @as(i16, @bitCast(new_value)) < 0);
+    setFlag(flags, .flag_sf, testBit(new_value, significant_bit_index));
     setFlag(flags, .flag_pf, parity(@truncate(new_value)));
-    setFlag(flags, .flag_of, did_overflow);
-    // TODO(TB): do cf and af need to consider if it is addition or subtraction?
-    const cf: bool = if (wide) ((old_value & (1 << 15)) != (new_value & (1 << 15))) else ((old_value & (1 << 7)) != (new_value & (1 << 7)));
-    const af: bool = (old_value & (1 << 3)) != (new_value & (1 << 3));
-    setFlag(flags, .flag_cf, cf);
-    setFlag(flags, .flag_af, af);
 }
 
 fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
@@ -610,7 +638,7 @@ fn decodeRegToFromRegMem(instruction_type: InstructionType, context: *const Cont
     const index = context.register.named_word.ip;
     const data = context.memory[0..];
     const d: bool = data[context.register.named_word.ip] & 0b00000010 != 0;
-    const w: u1 = @intCast(data[index] & 0b00000001);
+    const w: u1 = @truncate(data[index]);
 
     const mod, const reg, const rm = extractModRegRm(data[index + 1]);
     const displacement: [*]const u8 = data.ptr + index + 2;
@@ -680,21 +708,21 @@ fn decodeAddSubCmpImmToRegMem(context: *const Context) Instruction {
     const data = context.memory[0..];
     const index = context.register.named_word.ip;
     _, const reg, _ = extractModRegRm(data[index + 1]);
-    const s: u1 = @intCast((data[index] & 0b10) >> 1);
+    const s: u1 = @truncate(data[index] >> 1);
     return decodeImmToRegMem(extractAddSubCmpType(reg), context, s);
 }
 
 fn decodeImmToRegMem(instruction_type: InstructionType, context: *const Context, s: u1) Instruction {
     const data = context.memory[0..];
     const i = context.register.named_word.ip;
-    const w: u1 = @intCast(data[i] & 0b1);
+    const w: u1 = @truncate(data[i]);
     const mod, const reg, const rm = extractModRegRm(data[i + 1]);
     std.debug.assert(reg == 0b000 or reg == 0b101 or reg == 0b111);
     const displacement_only = mod == 0b00 and rm == 0b110;
     const displacement_size: u8 = if (mod == 0b11) 0 else if (displacement_only) 2 else mod;
     const immediate_index_offset: u8 = 2 + displacement_size;
     const wide_immediate = s == 0 and w == 1;
-    const immediate: u16 = extractUnsignedWord(data.ptr + i + immediate_index_offset, wide_immediate);
+    const immediate: u16 = extractUnsignedWordSignExtend(data.ptr + i + immediate_index_offset, w != 0, s != 0);
 
     var instruction: Instruction = .{
         .type = instruction_type,
@@ -1207,28 +1235,23 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
             write(dst_address, new_value);
         },
         .add => {
-            // TODO(TB): merge add and sub
-            // TODO(TB): handle overflow for byte values?
-            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
-            const old_dst_value: i16 = readSigned(dst_address);
-            const new_dst_value: i16, const did_overflow: u1 = @addWithOverflow(old_dst_value, getSrcOperandValueSigned(instruction.operand[1], context));
-            write(dst_address, @bitCast(new_dst_value));
-            std.debug.assert(new_dst_value == readSigned(dst_address));
-            updateFlags(&context.flags, @bitCast(old_dst_value), @bitCast(new_dst_value), instruction.wide, did_overflow != 0);
+            add(instruction.operand, instruction.wide, context);
         },
         .sub => {
             const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
-            const old_dst_value: i16 = readSigned(dst_address);
-            const new_dst_value: i16, const did_overflow: u1 = @subWithOverflow(old_dst_value, getSrcOperandValueSigned(instruction.operand[1], context));
-            write(dst_address, @bitCast(new_dst_value));
-            std.debug.assert(new_dst_value == readSigned(dst_address));
-            updateFlags(&context.flags, @bitCast(old_dst_value), @bitCast(new_dst_value), instruction.wide, did_overflow != 0);
+            const old_dst_value: i17 = readSigned(dst_address);
+            const src_value: i17 = getSrcOperandValueSigned(instruction.operand[1], context);
+            const new_dst_value: i17 = old_dst_value - src_value;
+            write(dst_address, @bitCast(@as(i16, @truncate(new_dst_value))));
+            std.debug.assert(@as(i16, @truncate(new_dst_value)) == readSigned(dst_address));
+            updateFlags(&context.flags, @bitCast(new_dst_value), instruction.wide);
         },
         .cmp => {
             const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
-            const old_dst_value: i16 = readSigned(dst_address);
-            const new_dst_value: i16, const did_overflow: u1 = @subWithOverflow(old_dst_value, getSrcOperandValueSigned(instruction.operand[1], context));
-            updateFlags(&context.flags, @bitCast(old_dst_value), @bitCast(new_dst_value), instruction.wide, did_overflow != 0);
+            const old_dst_value: i17 = readSigned(dst_address);
+            const src_value: i17 = getSrcOperandValueSigned(instruction.operand[1], context);
+            const new_dst_value: i17 = old_dst_value - src_value;
+            updateFlags(&context.flags, @bitCast(new_dst_value), instruction.wide);
         },
         else => unreachable,
     }
