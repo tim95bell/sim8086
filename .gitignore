@@ -3,3 +3,4 @@ zig-out/
 .zig-cache/
 tmp/
 NOTES.txt
+.DS_STORE

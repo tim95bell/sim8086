@@ -547,7 +547,7 @@ fn parity(x: u8) bool {
 }
 
 fn testBit(x: anytype, n: anytype) bool {
-    return @bitCast(@as(i1, @truncate((x >> n) & 1)));
+    return ((x >> n) & 1) != 0;
 }
 
 fn getCarry(a: anytype, b: anytype, c: anytype, n: anytype) bool {
@@ -555,29 +555,50 @@ fn getCarry(a: anytype, b: anytype, c: anytype, n: anytype) bool {
         else testBit(c, n);
 }
 
-fn add(operand: [2]Operand, wide: bool, context: *Context) void {
-    const dst_address: ReadWriteAddress = createReadWriteAddress(operand[0], context);
-    const old_dst_value: i17 = readSigned(dst_address);
-    const src_value: i17 = getSrcOperandValueSigned(operand[1], context);
-    const new_dst_value: i17 = old_dst_value + src_value;
-    write(dst_address, @bitCast(@as(i16, @truncate(new_dst_value))));
-    std.debug.assert(@as(i16, @truncate(new_dst_value)) == readSigned(dst_address));
-    updateFlags(&context.flags, @bitCast(new_dst_value), wide);
-    const significant_bit_index: u5 = if (wide) 15 else 7;
-    const carry_bit_index: u5 = significant_bit_index + 1;
-
-    const significant_bit_carry = getCarry(old_dst_value, src_value, new_dst_value, significant_bit_index);
-    const carry_bit_carry = getCarry(old_dst_value, src_value, new_dst_value, carry_bit_index);
-    setFlag(&context.flags, .flag_cf, carry_bit_carry);
-    setFlag(&context.flags, .flag_of, carry_bit_carry != significant_bit_carry);
-    setFlag(&context.flags, .flag_af, getCarry(old_dst_value, src_value, new_dst_value, 4));
+fn getBorrow(a: anytype, b: anytype, c: anytype, n: anytype) bool {
+    return (!testBit(a, n) and (testBit(b, n) or testBit(c, n))) or (testBit(a, n) and (testBit(b, n) == testBit(c, n)));
 }
 
-fn updateFlags(flags: *u16, new_value: u17, wide: bool) void {
+fn updateZSPFlags(flags: *u16, new_value: u17, wide: bool) void {
     const significant_bit_index: u5 = if (wide) 15 else 7;
     setFlag(flags, .flag_zf, new_value == 0);
     setFlag(flags, .flag_sf, testBit(new_value, significant_bit_index));
     setFlag(flags, .flag_pf, parity(@truncate(new_value)));
+}
+
+fn updateAddFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
+    // a + b = c
+    updateZSPFlags(flags, @bitCast(c), wide);
+    const significant_bit_index: u5 = if (wide) 15 else 7;
+    const carry_bit_index: u5 = significant_bit_index + 1;
+
+    const significant_bit_carry = getCarry(a, b, c, significant_bit_index);
+    const carry_bit_carry = getCarry(a, b, c, carry_bit_index);
+    setFlag(flags, .flag_cf, carry_bit_carry);
+    setFlag(flags, .flag_of, carry_bit_carry != significant_bit_carry);
+    setFlag(flags, .flag_af, getCarry(a, b, c, 3));
+}
+
+fn updateSubFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
+    // a - b = c
+    updateZSPFlags(flags, @bitCast(c), wide);
+    const significant_bit_index: u5 = if (wide) 15 else 7;
+    const carry_bit_index: u5 = significant_bit_index + 1;
+
+    const significant_bit_borrow = getBorrow(a, b, c, significant_bit_index);
+    const carry_bit_borrow = getBorrow(a, b, c, carry_bit_index);
+    setFlag(flags, .flag_cf, carry_bit_borrow);
+    setFlag(flags, .flag_of, carry_bit_borrow != significant_bit_borrow);
+    // TODO(TB): is 3 the right index for the a flag borrow?
+    setFlag(flags, .flag_af, getBorrow(a, b, c, 3));
+}
+
+fn sub(operand: [2]Operand, context: *Context) struct { ReadWriteAddress, i17, i17, i17 } {
+    const dst_address: ReadWriteAddress = createReadWriteAddress(operand[0], context);
+    const a: i17 = readSigned(dst_address);
+    const b: i17 = getSrcOperandValueSigned(operand[1], context);
+    const c: i17 = a - b;
+    return .{ dst_address, a, b, c };
 }
 
 fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
@@ -1235,23 +1256,23 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
             write(dst_address, new_value);
         },
         .add => {
-            add(instruction.operand, instruction.wide, context);
+            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
+            const a: i17 = readSigned(dst_address);
+            const b: i17 = getSrcOperandValueSigned(instruction.operand[1], context);
+            const c: i17 = a + b;
+            write(dst_address, @bitCast(@as(i16, @truncate(c))));
+            std.debug.assert(@as(i16, @truncate(c)) == readSigned(dst_address));
+            updateAddFlags(a, b, c, instruction.wide, &context.flags);
         },
         .sub => {
-            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
-            const old_dst_value: i17 = readSigned(dst_address);
-            const src_value: i17 = getSrcOperandValueSigned(instruction.operand[1], context);
-            const new_dst_value: i17 = old_dst_value - src_value;
-            write(dst_address, @bitCast(@as(i16, @truncate(new_dst_value))));
-            std.debug.assert(@as(i16, @truncate(new_dst_value)) == readSigned(dst_address));
-            updateFlags(&context.flags, @bitCast(new_dst_value), instruction.wide);
+            const dst_address, const a, const b, const c = sub(instruction.operand, context);
+            write(dst_address, @bitCast(@as(i16, @truncate(c))));
+            std.debug.assert(@as(i16, @truncate(c)) == readSigned(dst_address));
+            updateSubFlags(a, b, c, instruction.wide, &context.flags);
         },
         .cmp => {
-            const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
-            const old_dst_value: i17 = readSigned(dst_address);
-            const src_value: i17 = getSrcOperandValueSigned(instruction.operand[1], context);
-            const new_dst_value: i17 = old_dst_value - src_value;
-            updateFlags(&context.flags, @bitCast(new_dst_value), instruction.wide);
+            _, const a, const b, const c = sub(instruction.operand, context);
+            updateSubFlags(a, b, c, instruction.wide, &context.flags);
         },
         else => unreachable,
     }
