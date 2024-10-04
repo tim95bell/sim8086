@@ -246,7 +246,8 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
             }
         },
         .relative_jump_displacement => |data| {
-            return std.fmt.bufPrint(buffer, "{d}", .{data}) catch unreachable;
+            // NOTE(TB): add 2 to to data here so that it is as if going from before the jump instruction
+            return std.fmt.bufPrint(buffer, "${d}", .{data + 2}) catch unreachable;
         },
         .none => {
             return buffer[0..0];
@@ -260,7 +261,7 @@ fn getInstructionTypeString(instruction_type: InstructionType) []const u8 {
         .add => "add",
         .sub => "sub",
         .cmp => "cmp",
-        .jnz => "jnz",
+        .jnz => "jne",
         .je => "je",
         .jl => "jl",
         .jle => "jle",
@@ -1273,7 +1274,23 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
             _, const a, const b, const c = sub(instruction.operand, context);
             updateSubFlags(a, b, c, instruction.wide, &context.flags);
         },
-        else => unreachable,
+        .jnz => {
+            if (instruction.operand[0].type == .relative_jump_displacement) {
+                const displacement = instruction.operand[0].type.relative_jump_displacement;
+                std.debug.assert(instruction.operand[1].type == .none);
+                if (!testFlag(context.flags, .flag_zf)) {
+                    std.debug.assert(context.register.named_word.ip >= displacement);
+                    // TODO(TB): check for ip overflow
+                    const new_ip: i32 = @as(i32, context.register.named_word.ip) + displacement;
+                    context.register.named_word.ip = @bitCast(@as(i16, @truncate(new_ip)));
+                }
+            } else {
+                std.debug.assert(false);
+            }
+        },
+        else => {
+            std.debug.print("unimplemented operation: {s}\n", .{getInstructionTypeString(instruction.type)});
+        },
     }
 }
 
@@ -1309,6 +1326,21 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
                 if (old_value != new_value) {
                     _ = try writer.print(" {s}:0x{x}->0x{x}", .{dest_label, old_value, new_value});
                 }
+                _ = try writer.print(" ip:0x{x}->0x{x}", .{ip_before, context.register.named_word.ip});
+                if (flags_before != context.flags) {
+                    var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+                    const flags_before_string = printFlags(flags_before, &flags_before_buffer);
+                    var flags_after_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+                    const flags_after_string = printFlags(context.flags, &flags_after_buffer);
+                    _ = try writer.print(" flags:{s}->{s}", .{flags_before_string, flags_after_string});
+                }
+                _ = try writer.print("\n", .{});
+            },
+            .jnz => {
+                const flags_before = context.flags;
+                const ip_before = context.register.named_word.ip;
+                simulateInstruction(instruction, context);
+                _ = try writer.print(" ;", .{});
                 _ = try writer.print(" ip:0x{x}->0x{x}", .{ip_before, context.register.named_word.ip});
                 if (flags_before != context.flags) {
                     var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
