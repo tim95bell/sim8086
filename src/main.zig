@@ -247,7 +247,10 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
         },
         .relative_jump_displacement => |data| {
             // NOTE(TB): add 2 to to data here so that it is as if going from before the jump instruction
-            return std.fmt.bufPrint(buffer, "${d}", .{data + 2}) catch unreachable;
+            const negative = data < 0;
+            const data_plus_2 = data + 2;
+            const positive_data_plus_2 = if (negative) data_plus_2 * -1 else data_plus_2;
+            return std.fmt.bufPrint(buffer, "${s}{d}", .{if (negative) "-" else "+", positive_data_plus_2}) catch unreachable;
         },
         .none => {
             return buffer[0..0];
@@ -393,39 +396,41 @@ fn getFlagBitIndexLabel(flag: FlagBitIndex) u8 {
     };
 }
 
+const Registers = extern union {
+    // change 9 to RegisterIndex.len
+    named_word: extern struct {
+        ax: u16,
+        bx: u16,
+        cx: u16,
+        dx: u16,
+        sp: u16,
+        bp: u16,
+        si: u16,
+        di: u16,
+        ip: u16,
+        cs: u16,
+        ds: u16,
+        ss: u16,
+        es: u16,
+    },
+    named_byte: extern struct {
+        al: u8,
+        ah: u8,
+        bl: u8,
+        bh: u8,
+        cl: u8,
+        ch: u8,
+        dl: u8,
+        dh: u8,
+    },
+    byte: [@typeInfo(RegisterIndex).Enum.fields.len - 1][2]u8,
+    word: [@typeInfo(RegisterIndex).Enum.fields.len - 1]u16,
+};
+
 const Context = struct {
     memory: [1028 * 1028 * 1028]u8,
     program_size: u16,
-    register: extern union {
-        // change 9 to RegisterIndex.len
-        named_word: extern struct {
-            ax: u16,
-            bx: u16,
-            cx: u16,
-            dx: u16,
-            sp: u16,
-            bp: u16,
-            si: u16,
-            di: u16,
-            ip: u16,
-            cs: u16,
-            ds: u16,
-            ss: u16,
-            es: u16,
-        },
-        named_byte: extern struct {
-            al: u8,
-            ah: u8,
-            bl: u8,
-            bh: u8,
-            cl: u8,
-            ch: u8,
-            dl: u8,
-            dh: u8,
-        },
-        byte: [@typeInfo(RegisterIndex).Enum.fields.len - 1][2]u8,
-        word: [@typeInfo(RegisterIndex).Enum.fields.len - 1]u16,
-    },
+    register: Registers,
     flags: u16,
 
     fn init(self: *Context) void {
@@ -590,7 +595,7 @@ fn updateSubFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
     const carry_bit_borrow = getBorrow(a, b, c, carry_bit_index);
     setFlag(flags, .flag_cf, carry_bit_borrow);
     setFlag(flags, .flag_of, carry_bit_borrow != significant_bit_borrow);
-    setFlag(flags, .flag_af, getBorrow(a, b, c, 3));
+    setFlag(flags, .flag_af, getBorrow(a, b, c, 4));
 }
 
 fn sub(operand: [2]Operand, context: *Context) struct { ReadWriteAddress, i17, i17, i17 } {
@@ -1274,11 +1279,71 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
             _, const a, const b, const c = sub(instruction.operand, context);
             updateSubFlags(a, b, c, instruction.wide, &context.flags);
         },
+        .je => {
+            if (instruction.operand[0].type == .relative_jump_displacement) {
+                const displacement = instruction.operand[0].type.relative_jump_displacement;
+                std.debug.assert(instruction.operand[1].type == .none);
+                if (testFlag(context.flags, .flag_zf)) {
+                    std.debug.assert(context.register.named_word.ip >= displacement);
+                    // TODO(TB): check for ip overflow
+                    const new_ip: i32 = @as(i32, context.register.named_word.ip) + displacement;
+                    context.register.named_word.ip = @bitCast(@as(i16, @truncate(new_ip)));
+                }
+            } else {
+                std.debug.assert(false);
+            }
+        },
         .jnz => {
             if (instruction.operand[0].type == .relative_jump_displacement) {
                 const displacement = instruction.operand[0].type.relative_jump_displacement;
                 std.debug.assert(instruction.operand[1].type == .none);
                 if (!testFlag(context.flags, .flag_zf)) {
+                    std.debug.assert(context.register.named_word.ip >= displacement);
+                    // TODO(TB): check for ip overflow
+                    const new_ip: i32 = @as(i32, context.register.named_word.ip) + displacement;
+                    context.register.named_word.ip = @bitCast(@as(i16, @truncate(new_ip)));
+                }
+            } else {
+                std.debug.assert(false);
+            }
+        },
+        .jp => {
+            if (instruction.operand[0].type == .relative_jump_displacement) {
+                const displacement = instruction.operand[0].type.relative_jump_displacement;
+                std.debug.assert(instruction.operand[1].type == .none);
+                if (testFlag(context.flags, .flag_pf)) {
+                    std.debug.assert(context.register.named_word.ip >= displacement);
+                    // TODO(TB): check for ip overflow
+                    const new_ip: i32 = @as(i32, context.register.named_word.ip) + displacement;
+                    context.register.named_word.ip = @bitCast(@as(i16, @truncate(new_ip)));
+                }
+            } else {
+                std.debug.assert(false);
+            }
+        },
+        .jb => {
+            if (instruction.operand[0].type == .relative_jump_displacement) {
+                const displacement = instruction.operand[0].type.relative_jump_displacement;
+                std.debug.assert(instruction.operand[1].type == .none);
+                if (testFlag(context.flags, .flag_cf)) {
+                    std.debug.assert(context.register.named_word.ip >= displacement);
+                    // TODO(TB): check for ip overflow
+                    const new_ip: i32 = @as(i32, context.register.named_word.ip) + displacement;
+                    context.register.named_word.ip = @bitCast(@as(i16, @truncate(new_ip)));
+                }
+            } else {
+                std.debug.assert(false);
+            }
+        },
+        .loopnz => {
+            if (instruction.operand[0].type == .relative_jump_displacement) {
+                const displacement = instruction.operand[0].type.relative_jump_displacement;
+                std.debug.assert(instruction.operand[1].type == .none);
+
+                // TODO(TB): not supposed to update flags after this?
+                context.register.named_word.cx -= 1;
+
+                if (context.register.named_word.cx != 0) {
                     std.debug.assert(context.register.named_word.ip >= displacement);
                     // TODO(TB): check for ip overflow
                     const new_ip: i32 = @as(i32, context.register.named_word.ip) + displacement;
@@ -1299,60 +1364,19 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
     while (context.register.named_word.ip < context.program_size) {
         const instruction = decode(context).?;
         try print(writer, instruction);
-        switch (instruction.type) {
-            .mov, .add, .cmp, .sub => {
-                const dest_operand_forced_wide_register = switch (instruction.operand[0].type) {
-                    .register => |data|
-                        @as(Operand, .{ .type =
-                            .{ .register =
-                                .{
-                                    .index = data.index,
-                                    .size = .word,
-                                    .offset = .none,
-                                },
-                            },
-                        }),
-                    else => instruction.operand[0],
-                };
-                const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
-                const old_value: u16 = read(dst_address);
-                const flags_before = context.flags;
-                const ip_before = context.register.named_word.ip;
-                simulateInstruction(instruction, context);
-                const new_value: u16 = read(dst_address);
-                var dest_label_buffer: [32]u8 = undefined;
-                const dest_label = getOperandLabel(dest_operand_forced_wide_register, &dest_label_buffer);
-                _ = try writer.print(" ;", .{});
-                if (old_value != new_value) {
-                    _ = try writer.print(" {s}:0x{x}->0x{x}", .{dest_label, old_value, new_value});
-                }
-                _ = try writer.print(" ip:0x{x}->0x{x}", .{ip_before, context.register.named_word.ip});
-                if (flags_before != context.flags) {
-                    var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
-                    const flags_before_string = printFlags(flags_before, &flags_before_buffer);
-                    var flags_after_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
-                    const flags_after_string = printFlags(context.flags, &flags_after_buffer);
-                    _ = try writer.print(" flags:{s}->{s}", .{flags_before_string, flags_after_string});
-                }
-                _ = try writer.print("\n", .{});
-            },
-            .jnz => {
-                const flags_before = context.flags;
-                const ip_before = context.register.named_word.ip;
-                simulateInstruction(instruction, context);
-                _ = try writer.print(" ;", .{});
-                _ = try writer.print(" ip:0x{x}->0x{x}", .{ip_before, context.register.named_word.ip});
-                if (flags_before != context.flags) {
-                    var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
-                    const flags_before_string = printFlags(flags_before, &flags_before_buffer);
-                    var flags_after_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
-                    const flags_after_string = printFlags(context.flags, &flags_after_buffer);
-                    _ = try writer.print(" flags:{s}->{s}", .{flags_before_string, flags_after_string});
-                }
-                _ = try writer.print("\n", .{});
-            },
-            else => unreachable,
+        const flags_before = context.flags;
+        const registers_before = context.register;
+        _ = try writer.print(" ;", .{});
+        simulateInstruction(instruction, context);
+        try printRegistersThatChangedShort(writer, registers_before, context.register);
+        if (flags_before != context.flags) {
+            var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+            const flags_before_string = printFlags(flags_before, &flags_before_buffer);
+            var flags_after_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
+            const flags_after_string = printFlags(context.flags, &flags_after_buffer);
+            _ = try writer.print(" flags:{s}->{s}", .{flags_before_string, flags_after_string});
         }
+        _ = try writer.print("\n", .{});
     }
     _ = try writer.print("\n", .{});
     try printRegisters(writer, context);
@@ -1390,8 +1414,6 @@ fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
     if (context.register.named_word.di != 0) {
         _ = try writer.print(";      di: 0x{x:0>4} ({0d})\n", .{context.register.named_word.di});
     }
-    // TODO(TB): Casey does not print ip, leaving it out so the diff can match
-    //_ = try writer.print(";      ip: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ip});
     if (context.register.named_word.cs != 0) {
         _ = try writer.print(";      cs: 0x{x:0>4} ({0d})\n", .{context.register.named_word.cs});
     }
@@ -1405,6 +1427,48 @@ fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
         _ = try writer.print(";      ds: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ds});
     }
     _ = try writer.print(";      ip: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ip});
+}
+
+fn printRegistersThatChangedShort(writer: std.fs.File.Writer, registers_before: Registers, registers: Registers) !void {
+    if (registers_before.named_word.ax != registers.named_word.ax) {
+        _ = try writer.print(" ax:0x{x}->0x{x}", .{registers_before.named_word.ax, registers.named_word.ax});
+    }
+    if (registers_before.named_word.bx != registers.named_word.bx) {
+        _ = try writer.print(" bx:0x{x}->0x{x}", .{registers_before.named_word.bx, registers.named_word.bx});
+    }
+    if (registers_before.named_word.cx != registers.named_word.cx) {
+        _ = try writer.print(" cx:0x{x}->0x{x}", .{registers_before.named_word.cx, registers.named_word.cx});
+    }
+    if (registers_before.named_word.dx != registers.named_word.dx) {
+        _ = try writer.print(" dx:0x{x}->0x{x}", .{registers_before.named_word.dx, registers.named_word.dx});
+    }
+    if (registers_before.named_word.sp != registers.named_word.sp) {
+        _ = try writer.print(" sp:0x{x}->0x{x}", .{registers_before.named_word.sp, registers.named_word.sp});
+    }
+    if (registers_before.named_word.bp != registers.named_word.bp) {
+        _ = try writer.print(" bp:0x{x}->0x{x}", .{registers_before.named_word.bp, registers.named_word.bp});
+    }
+    if (registers_before.named_word.si != registers.named_word.si) {
+        _ = try writer.print(" si:0x{x}->0x{x}", .{registers_before.named_word.si, registers.named_word.si});
+    }
+    if (registers_before.named_word.di != registers.named_word.di) {
+        _ = try writer.print(" di:0x{x}->0x{x}", .{registers_before.named_word.di, registers.named_word.di});
+    }
+    if (registers_before.named_word.ip != registers.named_word.ip) {
+        _ = try writer.print(" ip:0x{x}->0x{x}", .{registers_before.named_word.ip, registers.named_word.ip});
+    }
+    if (registers_before.named_word.cs != registers.named_word.cs) {
+        _ = try writer.print(" cs:0x{x}->0x{x}", .{registers_before.named_word.cs, registers.named_word.cs});
+    }
+    if (registers_before.named_word.es != registers.named_word.es) {
+        _ = try writer.print(" es:0x{x}->0x{x}", .{registers_before.named_word.es, registers.named_word.es});
+    }
+    if (registers_before.named_word.ss != registers.named_word.ss) {
+        _ = try writer.print(" ss:0x{x}->0x{x}", .{registers_before.named_word.ss, registers.named_word.ss});
+    }
+    if (registers_before.named_word.ds != registers.named_word.ds) {
+        _ = try writer.print(" ds:0x{x}->0x{x}", .{registers_before.named_word.ds, registers.named_word.ds});
+    }
 }
 
 pub fn main() !void {
