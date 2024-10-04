@@ -576,7 +576,7 @@ fn updateAddFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
     const carry_bit_carry = getCarry(a, b, c, carry_bit_index);
     setFlag(flags, .flag_cf, carry_bit_carry);
     setFlag(flags, .flag_of, carry_bit_carry != significant_bit_carry);
-    setFlag(flags, .flag_af, getCarry(a, b, c, 3));
+    setFlag(flags, .flag_af, getCarry(a, b, c, 4));
 }
 
 fn updateSubFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
@@ -589,7 +589,6 @@ fn updateSubFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
     const carry_bit_borrow = getBorrow(a, b, c, carry_bit_index);
     setFlag(flags, .flag_cf, carry_bit_borrow);
     setFlag(flags, .flag_of, carry_bit_borrow != significant_bit_borrow);
-    // TODO(TB): is 3 the right index for the a flag borrow?
     setFlag(flags, .flag_af, getBorrow(a, b, c, 3));
 }
 
@@ -1301,6 +1300,7 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
                 const dst_address: ReadWriteAddress = createReadWriteAddress(instruction.operand[0], context);
                 const old_value: u16 = read(dst_address);
                 const flags_before = context.flags;
+                const ip_before = context.register.named_word.ip;
                 simulateInstruction(instruction, context);
                 const new_value: u16 = read(dst_address);
                 var dest_label_buffer: [32]u8 = undefined;
@@ -1309,6 +1309,7 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
                 if (old_value != new_value) {
                     _ = try writer.print(" {s}:0x{x}->0x{x}", .{dest_label, old_value, new_value});
                 }
+                _ = try writer.print(" ip:0x{x}->0x{x}", .{ip_before, context.register.named_word.ip});
                 if (flags_before != context.flags) {
                     var flags_before_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
                     const flags_before_string = printFlags(flags_before, &flags_before_buffer);
@@ -1371,6 +1372,7 @@ fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
     if (context.register.named_word.ds != 0) {
         _ = try writer.print(";      ds: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ds});
     }
+    _ = try writer.print(";      ip: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ip});
 }
 
 pub fn main() !void {
