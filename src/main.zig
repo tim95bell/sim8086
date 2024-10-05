@@ -1012,7 +1012,7 @@ fn print(writer: std.fs.File.Writer, instruction: Instruction) !void {
             operand_1_label,
         });
     } else {
-        if (instruction.operand[0].type == .memory and instruction.operand[1].type == .immediate) {
+        if (instruction.operand[0].type == .memory) {
             try writer.print("{s} {s} {s}, {s}", .{
                 instruction_type_string,
                 if (instruction.wide) "word" else "byte",
