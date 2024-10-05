@@ -211,7 +211,8 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
         .memory => |data| {
             if (data.reg[0].index == .none) {
                 std.debug.assert(data.reg[1].index == .none);
-                return std.fmt.bufPrint(buffer, "[{d}]", .{data.displacement}) catch unreachable;
+                // NOTE(TB): treat displacement as unsigned, as signed address does not make sense
+                return std.fmt.bufPrint(buffer, "[+{d}]", .{@as(u16, @bitCast(data.displacement))}) catch unreachable;
             } else if (data.reg[1].index == .none) {
                 var reg_label_buffer: [2]u8 = undefined;
                 if (data.displacement == 0) {
@@ -219,7 +220,7 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
                     return std.fmt.bufPrint(buffer, "[{s}]", .{getRegisterLabel(data.reg[0], &reg_label_buffer)}) catch unreachable;
                 } else {
                     const negative = data.displacement < 0;
-                    return std.fmt.bufPrint(buffer, "[{s} {s} {d}]", .{
+                    return std.fmt.bufPrint(buffer, "[{s}{s}{d}]", .{
                         getRegisterLabel(data.reg[0], &reg_label_buffer),
                         if (negative) "-" else "+",
                         if (negative) data.displacement * -1 else data.displacement,
@@ -230,13 +231,13 @@ fn getOperandLabel(operand: Operand, buffer: []u8) []u8 {
                 const reg_0_label = getRegisterLabel(data.reg[0], &reg_label_buffer[0]);
                 const reg_1_label = getRegisterLabel(data.reg[1], &reg_label_buffer[1]);
                 if (data.displacement == 0) {
-                    return std.fmt.bufPrint(buffer, "[{s} + {s}]", .{
+                    return std.fmt.bufPrint(buffer, "[{s}+{s}]", .{
                         reg_0_label,
                         reg_1_label,
                     }) catch unreachable;
                 } else {
                     const negative = data.displacement < 0;
-                    return std.fmt.bufPrint(buffer, "[{s} + {s} {s} {d}]", .{
+                    return std.fmt.bufPrint(buffer, "[{s}+{s}{s}{d}]", .{
                         reg_0_label,
                         reg_1_label,
                         if (negative) "-" else "+",
