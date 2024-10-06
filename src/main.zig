@@ -1360,7 +1360,7 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
     }
 }
 
-fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
+fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context, dump: bool) !void {
     _ = try writer.print("\n", .{});
     while (context.register.named_word.ip < context.program_size) {
         const instruction = decode(context).?;
@@ -1386,6 +1386,17 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context) !void {
         var flags_buffer: [@typeInfo(FlagBitIndex).Enum.fields.len]u8 = undefined;
         const flags = printFlags(context.flags, &flags_buffer);
         _ = try writer.print(";   flags: {s}\n", .{flags});
+    }
+
+    if (dump) {
+        const file = try std.fs.cwd().createFile(
+            "sim8086_memory.txt",
+            .{ .read = true },
+        );
+        defer file.close();
+
+        const bytes_written = try file.writeAll(&context.memory);
+        _ = bytes_written;
     }
 }
 
@@ -1478,9 +1489,12 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(gpa);
     var file_name: []u8 = &.{};
     var exec: bool = false;
+    var dump: bool = false;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "-exec")) {
             exec = true;
+        } else if (std.mem.eql(u8, arg, "-dump")) {
+            dump = true;
         } else {
             file_name = arg;
         }
@@ -1488,6 +1502,7 @@ pub fn main() !void {
     if (file_name.len == 0) {
         @panic("you must provide a file to decode as a command line argument");
     }
+    std.debug.assert(!(dump and !exec));
     const file = try std.fs.cwd().openFile(file_name, .{});
     const out = std.io.getStdOut().writer();
     // TODO(TB): use buffered writer
@@ -1500,7 +1515,7 @@ pub fn main() !void {
     context.init();
     context.program_size = @intCast(try file.read(&context.memory));
     if (exec) {
-        try simulateAndPrintAll(out, context);
+        try simulateAndPrintAll(out, context, dump);
     } else {
         try decodeAndPrintAll(gpa, out, context);
     }
