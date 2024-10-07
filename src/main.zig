@@ -505,8 +505,8 @@ const Context = struct {
         std.debug.assert(@as(u16, self.register.byte[12][0]) | (@as(u16, self.register.byte[12][1]) << 8) == self.register.named_word.es);
         std.debug.assert(@as(u16, self.register.byte[12][0]) | (@as(u16, self.register.byte[12][1]) << 8) == self.register.word[12]);
 
-        // TODO(TB): zero out memory?
         @memset(&self.register.word, 0);
+        @memset(&self.memory, 0);
         self.flags = 0;
     }
 };
@@ -1360,7 +1360,189 @@ fn simulateInstruction(instruction: Instruction, context: *Context) void {
     }
 }
 
-fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context, dump: bool) !void {
+fn getEAClocks(mem: Memory) u8 {
+    if (mem.reg[0].index == .none) {
+        // displacement only
+        std.debug.assert(mem.reg[1].index == .none);
+        return 6;
+    } else {
+        if (mem.reg[1].index == .none) {
+            if (mem.displacement == 0) {
+                // base or index only
+                return 5;
+            } else {
+                // displacement + base or index
+                return 9;
+            }
+        } else {
+            if (mem.displacement == 0) {
+                // base + index
+                if (mem.reg[0].index == .bp) {
+                    if (mem.reg[1].index == .di) {
+                        // bp + di
+                        return 7;
+                    } else {
+                        // bp + si
+                        std.debug.assert(mem.reg[1].index == .si);
+                        return 8;
+                    }
+                } else {
+                    std.debug.assert(mem.reg[0].index == .b and mem.reg[0].offset == .none and mem.reg[0].size == .word);
+                    if (mem.reg[1].index == .si) {
+                        // bx + si
+                        return 7;
+                    } else {
+                        // bx + di
+                        std.debug.assert(mem.reg[1].index == .di);
+                        return 8;
+                    }
+                }
+            } else {
+                // displacement + base + index
+                if (mem.reg[0].index == .bp) {
+                    if (mem.reg[1].index == .di) {
+                        // bp + di + disp
+                        return 11;
+                    } else {
+                        // bp + si + disp
+                        std.debug.assert(mem.reg[1].index == .si);
+                        return 12;
+                    }
+                } else {
+                    std.debug.assert(mem.reg[0].index == .b and mem.reg[0].offset == .none and mem.reg[0].size == .word);
+                    if (mem.reg[1].index == .si) {
+                        // bx + si + disp
+                        return 11;
+                    } else {
+                        // bx + di + disp
+                        std.debug.assert(mem.reg[1].index == .di);
+                        return 12;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn getClocks(instruction: Instruction) struct { u8, u8 } {
+    switch (instruction.type) {
+        .mov => {
+            switch (instruction.operand[0].type) {
+                .register => |reg_a| {
+                    switch (instruction.operand[1].type) {
+                        .register => {
+                            return .{ 2, 0 };
+                        },
+                        .memory => |mem_b| {
+                            if (reg_a.index == .a) {
+                                // NOTE(TB): this does not have ea for some reason, even though it uses memory
+                                return .{ 10, 0 };
+                            }
+
+                            return .{ 8, getEAClocks(mem_b) };
+                        },
+                        .immediate => {
+                            return .{ 4, 0 };
+                        },
+                        else => unreachable,
+                    }
+                },
+                .memory => |mem_a| {
+                    switch (instruction.operand[1].type) {
+                        .register => |reg_b| {
+                            if (reg_b.index == .a) {
+                                // NOTE(TB): this does not have ea for some reason, even though it uses memory
+                                return .{ 10, 0 };
+                            }
+                            return .{ 9, getEAClocks(mem_a) };
+                        },
+                        .immediate => {
+                            return .{ 10, getEAClocks(mem_a) };
+                        },
+                        else => unreachable,
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        .add, .sub => {
+            switch (instruction.operand[0].type) {
+                .register => {
+                    switch (instruction.operand[1].type) {
+                        .register => {
+                            return .{ 3, 0 };
+                        },
+                        .memory => |mem_b| {
+                            return .{ 9, getEAClocks(mem_b) };
+                        },
+                        .immediate => {
+                            return .{ 4, 0 };
+                        },
+                        else => unreachable,
+                    }
+                },
+                .memory => |mem_a| {
+                    switch (instruction.operand[1].type) {
+                        .register => {
+                            return .{ 16, getEAClocks(mem_a) };
+                        },
+                        .immediate => {
+                            return  .{ 17, getEAClocks(mem_a) };
+                        },
+                        else => unreachable,
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        .cmp => {
+            switch (instruction.operand[0].type) {
+                .register => {
+                    switch (instruction.operand[1].type) {
+                        .register => {
+                            return .{ 3, 0 };
+                        },
+                        .memory => |mem_b| {
+                            return .{ 9, getEAClocks(mem_b) };
+                        },
+                        .immediate => {
+                            return .{ 4, 0 };
+                        },
+                        else => unreachable,
+                    }
+                },
+                .memory => {
+                    switch (instruction.operand[1].type) {
+                        .register => {
+                            return .{ 9, 0 };
+                        },
+                        .immediate => {
+                            return .{ 10, 0 };
+                        },
+                        else => unreachable,
+                    }
+                },
+                else => unreachable,
+            }
+        },
+        else => unreachable,
+    }
+}
+
+fn getClocksString(instruction: Instruction, clocks: *u64, buffer: []u8) ![]u8 {
+    const base_clocks, const ea_clocks = getClocks(instruction);
+    const total = base_clocks + ea_clocks;
+    clocks.* += total;
+
+    if (ea_clocks != 0) {
+        return std.fmt.bufPrint(buffer, "+{d} = {d} ({d} + {d}ea)", .{total, clocks.*, base_clocks, ea_clocks});
+    }
+
+    return std.fmt.bufPrint(buffer, "+{d} = {d}", .{total, clocks.*});
+}
+
+fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context, dump: bool, print_clocks: bool) !void {
+    var clocks: u64 = 0;
     _ = try writer.print("\n", .{});
     while (context.register.named_word.ip < context.program_size) {
         const instruction = decode(context).?;
@@ -1368,6 +1550,12 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context, dump: bool
         const flags_before = context.flags;
         const registers_before = context.register;
         _ = try writer.print(" ;", .{});
+
+        if (print_clocks) {
+            var clocks_string_buffer: [64]u8 = undefined;
+            _ = try writer.print(" Clocks: {s} |", .{try getClocksString(instruction, &clocks, &clocks_string_buffer)});
+        }
+
         simulateInstruction(instruction, context);
         try printRegistersThatChangedShort(writer, registers_before, context.register);
         if (flags_before != context.flags) {
@@ -1490,11 +1678,14 @@ pub fn main() !void {
     var file_name: []u8 = &.{};
     var exec: bool = false;
     var dump: bool = false;
+    var print_clocks: bool = false;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "-exec")) {
             exec = true;
         } else if (std.mem.eql(u8, arg, "-dump")) {
             dump = true;
+        } else if (std.mem.eql(u8, arg, "-print_clocks")) {
+            print_clocks = true;
         } else {
             file_name = arg;
         }
@@ -1503,6 +1694,7 @@ pub fn main() !void {
         @panic("you must provide a file to decode as a command line argument");
     }
     std.debug.assert(!(dump and !exec));
+    std.debug.assert(!(print_clocks and !exec));
     const file = try std.fs.cwd().openFile(file_name, .{});
     const out = std.io.getStdOut().writer();
     // TODO(TB): use buffered writer
@@ -1515,7 +1707,7 @@ pub fn main() !void {
     context.init();
     context.program_size = @intCast(try file.read(&context.memory));
     if (exec) {
-        try simulateAndPrintAll(out, context, dump);
+        try simulateAndPrintAll(out, context, dump, print_clocks);
     } else {
         try decodeAndPrintAll(gpa, out, context);
     }
