@@ -1,0 +1,3 @@
+[submodule "external/computer_enhance"]
+	path = external/computer_enhance
+	url = git@github.com:cmuratori/computer_enhance.git
