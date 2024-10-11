@@ -2,15 +2,122 @@ const std = @import("std");
 
 pub const ItemType = enum { t_null, t_boolean, t_string, t_number, t_object, t_array };
 
-pub const Item = struct {
-    union(ItemType) {
-        t_null: void,
-        t_boolean: bool,
-        t_string: []u8,
-        t_number: f64,
-        t_object: std.AutoHashMap(Item, Item),
-        t_array: std.ArrayList(Item),
+pub const Item = union(ItemType) {
+    t_null: void,
+    t_boolean: bool,
+    t_string: String,
+    t_number: f64,
+    t_object: std.AutoHashMap(Item, Item),
+    t_array: std.ArrayList(Item),
+
+    pub fn print(self: *const Item) void {
+        switch (self.*) {
+            .t_null => std.debug.print("null\n", .{}),
+            .t_boolean => |data| std.debug.print("{s}\n", .{if (data) "true" else "false"}),
+            .t_string => |data| std.debug.print("\"{s}\"\n", .{data.getBufferConst()}),
+            .t_number => |data| std.debug.print("{d}\n", .{data}),
+            .t_object => unreachable,
+            .t_array => unreachable,
+        }
+    }
+
+    pub fn deinit(self: *const Item, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .t_string => |data| {
+                data.deinit(allocator);
+            },
+            // TODO(TB): deinit t_array and t_object?
+            else => {},
+        }
+    }
+};
+
+pub fn parse(allocator: std.mem.Allocator, input: []const u8) ?Item {
+    var tokenizer = Tokenizer.create(input);
+
+    const item = parseNextItem(allocator, &tokenizer);
+    if (item != null) {
+        var token = tokenizer.next(allocator);
+        defer token.deinit(allocator);
+        if (token.type == .t_end_of_stream) {
+            return item;
+        }
+
+        // TODO(TB): could this use errdefer?
+        item.?.deinit(allocator);
+    }
+
+    return null;
+}
+
+fn parseNextItem(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
+    var token = tokenizer.next(allocator);
+    defer token.deinit(allocator);
+    switch (token.type) {
+        .t_open_object => return parseNextObject(allocator, tokenizer),
+        .t_open_array => return parseNextArray(allocator, tokenizer),
+        .t_null => return .t_null,
+        .t_number => |data| return .{ .t_number = data },
+        .t_boolean => |data| return .{ .t_boolean = data },
+        .t_string => |*data| {
+            const result = .{ .t_string = data.* };
+            data.release();
+            return result;
+        },
+        else => return null,
+    }
+}
+
+fn parseNextObject(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
+    // TODO(TB):
+    _ = allocator;
+    _ = tokenizer;
+    return null;
+}
+
+fn parseNextArray(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
+    // TODO(TB):
+    _ = allocator;
+    _ = tokenizer;
+    return null;
+}
+
+pub const String = struct {
+    const Self = @This();
+
+    type: union(enum) {
+        small_string: [32]u8,
+        large_string: [*]u8,
     },
+    len: usize,
+
+    fn getBuffer(self: *Self) []u8 {
+        return switch (self.type) {
+            .small_string => |*data| data[0..self.len],
+            .large_string => |data| data[0..self.len],
+        };
+    }
+
+    fn getBufferConst(self: *const Self) []const u8 {
+        return switch (self.type) {
+            .small_string => |*data| data[0..self.len],
+            .large_string => |data| data[0..self.len],
+        };
+    }
+
+    // TODO(TB): should this be on const?
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
+        switch (self.type) {
+            .large_string => |data| allocator.free(data[0..self.len]),
+            else => {},
+        }
+    }
+
+    // NOTE(TB): used to remove ownership of the data so that deinit will not do anthing
+    pub fn release(self: *Self) void {
+        self.type = .{ .small_string = undefined };
+        self.len = 0;
+    }
 };
 
 pub const Token = struct {
@@ -28,39 +135,10 @@ pub const Token = struct {
         t_null: void,
         t_number: f64,
         t_boolean: bool,
-        t_string: struct {
-            const Self = @This();
-
-            type: union(enum) {
-                small_string: [32]u8,
-                large_string: [*]u8,
-            },
-            len: usize,
-
-            fn getBuffer(self: *Self) []u8 {
-                return switch (self.type) {
-                    .small_string => |*data| data[0..self.len],
-                    .large_string => |data| data[0..self.len],
-                };
-            }
-
-            fn getBufferConst(self: *const Self) []const u8 {
-                return switch (self.type) {
-                    .small_string => |*data| data[0..self.len],
-                    .large_string => |data| data[0..self.len],
-                };
-            }
-
-            pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-                switch (self.type) {
-                    .large_string => |data| allocator.free(data),
-                    else => {},
-                }
-            }
-        },
+        t_string: String,
     },
 
-    pub fn deinit(self: *Token, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const Token, allocator: std.mem.Allocator) void {
         switch (self.type) {
             .t_string => |data| {
                 data.deinit(allocator);
@@ -199,9 +277,9 @@ fn getCharNumericValue(c: u8) u8 {
 }
 
 fn matchSymbol(input: []const u8, index: usize, keyword: []const u8) bool {
-    return (index + keyword.len < input.len and
+    return (index + keyword.len <= input.len and
         std.mem.eql(u8, input[index .. index + keyword.len], keyword) and
-        (index + keyword.len + 1 >= input.len or !isLegalSymbolRestCharacter(input[index + keyword.len])));
+        (index + keyword.len + 1 > input.len or !isLegalSymbolRestCharacter(input[index + keyword.len])));
 }
 
 fn lexNumber(input: []const u8, start_index: usize) Token {
