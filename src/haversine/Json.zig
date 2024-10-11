@@ -122,11 +122,18 @@ fn parseNextArray(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
         // TODO(TB): should parseNextItem directly into the memory of items
         const item = parseNextItem(allocator, tokenizer);
         if (item == null) {
+            for (items.items) |x| {
+                x.deinit(allocator);
+            }
             items.deinit();
             return null;
         }
 
         items.append(item.?) catch {
+            item.?.deinit(allocator);
+            for (items.items) |x| {
+                x.deinit(allocator);
+            }
             items.deinit();
             return null;
         };
@@ -518,4 +525,25 @@ test "json parse: array" {
     defer result.?.deinit(std.testing.allocator);
     try expect(result.? == .t_array);
     try expect(result.?.t_array.items.len == 5);
+}
+
+test "json parse: array2" {
+    const buffer = "[\"sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf\", false]";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_array);
+    try expect(result.?.t_array.items.len == 2);
+
+    try expect(result.?.t_array.items[0] == .t_string);
+    try expect(std.mem.eql(u8, result.?.t_array.items[0].t_string.getBufferConst(), "sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf"));
+
+    try expect(result.?.t_array.items[1] == .t_boolean);
+    try expect(result.?.t_array.items[1].t_boolean == false);
+}
+
+test "json parse: array3" {
+    const buffer = "[\"sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf\", dsfsf]";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result == null);
 }
