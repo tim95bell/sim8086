@@ -9,7 +9,7 @@ pub const Item = union(ItemType) {
     t_boolean: bool,
     t_string: String,
     t_number: f64,
-    t_object: std.AutoHashMap(Item, Item),
+    t_object: std.AutoHashMap(String, Item),
     t_array: std.ArrayList(Item),
 
     pub fn print(self: *const Item) void {
@@ -32,45 +32,51 @@ pub const Item = union(ItemType) {
         }
     }
 
-    pub fn deinit(self: *const Item, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Item, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .t_string => |data| {
                 data.deinit(allocator);
             },
-            .t_array => |data| {
-                for (data.items) |x| {
+            .t_array => |*data| {
+                for (data.items) |*x| {
                     x.deinit(allocator);
                 }
                 data.deinit();
             },
-            // TODO(TB): deinit t_object?
+            .t_object => |*data| {
+                var iterator = data.iterator();
+                while (iterator.next()) |x| {
+                    x.key_ptr.deinit(allocator);
+                    x.value_ptr.deinit(allocator);
+                }
+                data.deinit();
+            },
             else => {},
         }
     }
 };
 
-pub fn parse(allocator: std.mem.Allocator, input: []const u8) ?Item {
+pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Item {
     var tokenizer = Tokenizer.create(input);
 
-    const item = parseNextItem(allocator, &tokenizer);
-    if (item != null) {
-        tokenizer.next(allocator);
-        if (tokenizer.token.type == .t_end_of_stream) {
-            return item;
-        }
+    var item = try parseNextItem(allocator, &tokenizer);
 
-        // TODO(TB): could this use errdefer?
-        item.?.deinit(allocator);
+    tokenizer.next(allocator);
+    if (tokenizer.token.type == .t_end_of_stream) {
+        return item;
     }
 
-    return null;
+    // TODO(TB): could this use errdefer?
+    item.deinit(allocator);
+
+    return ParseError.SyntaxError;
 }
 
-fn parseNextItem(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
+fn parseNextItem(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ParseError!Item {
     tokenizer.peek(allocator);
     switch (tokenizer.token.type) {
-        .t_open_object => return parseNextObject(allocator, tokenizer),
-        .t_open_array => return parseNextArray(allocator, tokenizer),
+        .t_open_object => return try parseNextObject(allocator, tokenizer),
+        .t_open_array => return try parseNextArray(allocator, tokenizer),
         .t_null => {
             tokenizer.next(allocator);
             return .t_null;
@@ -89,21 +95,66 @@ fn parseNextItem(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
             tokenizer.next(allocator);
             return result;
         },
-        else => return null,
+        else => return ParseError.SyntaxError,
     }
 }
 
-fn parseNextObject(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
-    // TODO(TB):
-    _ = allocator;
-    _ = tokenizer;
-    return null;
+fn parseNextObject(allocator: std.mem.Allocator, tokenizer: *Tokenizer) !Item {
+    tokenizer.next(allocator);
+    std.debug.assert(tokenizer.token.type == .t_open_object);
+    var items = std.AutoHashMap(String, Item).init(allocator);
+    errdefer {
+        var iterator = items.iterator();
+        while (iterator.next()) |x| {
+            x.key_ptr.deinit(allocator);
+            x.value_ptr.deinit(allocator);
+        }
+        items.deinit();
+    }
+
+    while (true) {
+        tokenizer.peek(allocator);
+        if (tokenizer.token.type == .t_close_object) {
+            tokenizer.next(allocator);
+            return .{ .t_object = items };
+        } else if (tokenizer.token.type == .t_comma) {
+            if (items.count() == 0) {
+                return ParseError.SyntaxError;
+            }
+
+            tokenizer.next(allocator);
+        }
+
+        var key = try parseNextItem(allocator, tokenizer);
+        errdefer key.deinit(allocator);
+
+        if (key != .t_string) {
+            return ParseError.SyntaxError;
+        }
+
+        tokenizer.next(allocator);
+        if (tokenizer.token.type != .t_colon) {
+            return ParseError.SyntaxError;
+        }
+
+        var value = try parseNextItem(allocator, tokenizer);
+        errdefer value.deinit(allocator);
+
+        // TODO(TB): consider if there is multiple keys that are the same?
+        try items.put(key.t_string, value);
+    }
 }
 
-fn parseNextArray(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
+const ParseError = error{ SyntaxError, OutOfMemory };
+
+fn parseNextArray(allocator: std.mem.Allocator, tokenizer: *Tokenizer) !Item {
     tokenizer.next(allocator);
     std.debug.assert(tokenizer.token.type == .t_open_array);
     var items = std.ArrayList(Item).init(allocator);
+    errdefer items.deinit();
+    errdefer for (items.items) |*x| {
+        x.deinit(allocator);
+    };
 
     while (true) {
         tokenizer.peek(allocator);
@@ -112,30 +163,18 @@ fn parseNextArray(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
             return .{ .t_array = items };
         } else if (tokenizer.token.type == .t_comma) {
             if (items.items.len == 0) {
-                items.deinit();
-                return null;
+                return ParseError.SyntaxError;
             }
 
             tokenizer.next(allocator);
         }
 
         // TODO(TB): should parseNextItem directly into the memory of items
-        const item = parseNextItem(allocator, tokenizer);
-        if (item == null) {
-            for (items.items) |x| {
-                x.deinit(allocator);
-            }
-            items.deinit();
-            return null;
-        }
+        var item = try parseNextItem(allocator, tokenizer);
 
-        items.append(item.?) catch {
-            item.?.deinit(allocator);
-            for (items.items) |x| {
-                x.deinit(allocator);
-            }
-            items.deinit();
-            return null;
+        items.append(item) catch |err| {
+            item.deinit(allocator);
+            return err;
         };
     }
 }
@@ -148,6 +187,22 @@ pub const String = struct {
         large_string: [*]u8,
     },
     len: usize,
+
+    fn create(allocator: std.mem.Allocator, data: []const u8) !String {
+        var result: String = .{
+            .len = data.len,
+            .type = undefined,
+        };
+        if (data.len < 32) {
+            result.type = .{ .small_string = undefined };
+            @memcpy(result.type.small_string[0..result.len], data);
+        } else {
+            const memory = try allocator.alloc(u8, result.len);
+            result.type = .{ .large_string = memory.ptr };
+            @memcpy(result.type.large_string[0..result.len], data);
+        }
+        return result;
+    }
 
     fn getBuffer(self: *Self) []u8 {
         return switch (self.type) {
@@ -384,6 +439,7 @@ fn lexNumber(input: []const u8, start_index: usize) Token {
     return .{ .type = .{ .t_number = result }, .index = start_index, .len = index - start_index };
 }
 
+// TODO(TB): Tokenizer needs a deinit so that the last token gets deinit
 pub const Tokenizer = struct {
     input: []const u8,
     input_index: usize = 0,
@@ -449,101 +505,152 @@ pub const Tokenizer = struct {
 };
 
 test "json parse: false" {
-    const result = parse(std.testing.allocator, "false");
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_boolean);
-    try expect(result.?.t_boolean == false);
+    var result = try parse(std.testing.allocator, "false");
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_boolean);
+    try expect(result.t_boolean == false);
 }
 
 test "json parse: true" {
-    const result = parse(std.testing.allocator, "true");
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_boolean);
-    try expect(result.?.t_boolean == true);
+    var result = try parse(std.testing.allocator, "true");
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_boolean);
+    try expect(result.t_boolean == true);
 }
 
 test "json parse: null" {
-    const result = parse(std.testing.allocator, "null");
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_null);
+    var result = try parse(std.testing.allocator, "null");
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_null);
 }
 
 test "json parse: 3423324" {
-    const result = parse(std.testing.allocator, "3423324");
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_number);
-    try expect(result.?.t_number == 3423324);
+    var result = try parse(std.testing.allocator, "3423324");
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_number);
+    try expect(result.t_number == 3423324);
 }
 
 test "json parse: 3423.324" {
-    const result = parse(std.testing.allocator, "3423.324");
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_number);
-    try expect(result.?.t_number == 3423.324);
+    var result = try parse(std.testing.allocator, "3423.324");
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_number);
+    try expect(result.t_number == 3423.324);
 }
 
 test "json parse: small string with escapes" {
     const buffer = "\"dfs\\\\sdfdfs\\\"dfdsfsdf\"";
-    const result = parse(std.testing.allocator, buffer);
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_string);
-    try expect(result.?.t_string.len == 19);
-    try expect(result.?.t_string.type == .small_string);
-    try expect(std.mem.eql(u8, result.?.t_string.getBufferConst(), "dfs\\sdfdfs\"dfdsfsdf"));
+    var result = try parse(std.testing.allocator, buffer);
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_string);
+    try expect(result.t_string.len == 19);
+    try expect(result.t_string.type == .small_string);
+    try expect(std.mem.eql(u8, result.t_string.getBufferConst(), "dfs\\sdfdfs\"dfdsfsdf"));
 }
 
 test "json parse: large string" {
     const buffer = "\"thisisalargestringdflklfndlfgndfjkgndslfnldsnflkdsfndklsjngfjkldsnfgwdsfljkndsjklfndslfgnfgdjlnl\"";
-    const result = parse(std.testing.allocator, buffer);
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_string);
-    try expect(result.?.t_string.len == 96);
-    try expect(result.?.t_string.type == .large_string);
-    try expect(std.mem.eql(u8, result.?.t_string.getBufferConst(), buffer[1 .. buffer.len - 1]));
+    var result = try parse(std.testing.allocator, buffer);
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_string);
+    try expect(result.t_string.len == 96);
+    try expect(result.t_string.type == .large_string);
+    try expect(std.mem.eql(u8, result.t_string.getBufferConst(), buffer[1 .. buffer.len - 1]));
 }
 
 test "json parse: empty array" {
     const buffer = "[]";
-    const result = parse(std.testing.allocator, buffer);
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_array);
-    try expect(result.?.t_array.items.len == 0);
+    var result = try parse(std.testing.allocator, buffer);
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_array);
+    try expect(result.t_array.items.len == 0);
 }
 
 test "json parse: array" {
     const buffer = "[null, false, [], true, [1, 2, \"hello\"]]";
-    const result = parse(std.testing.allocator, buffer);
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_array);
-    try expect(result.?.t_array.items.len == 5);
+    var result = try parse(std.testing.allocator, buffer);
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_array);
+    try expect(result.t_array.items.len == 5);
 }
 
 test "json parse: array2" {
     const buffer = "[\"sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf\", false]";
-    const result = parse(std.testing.allocator, buffer);
-    try expect(result != null);
-    defer result.?.deinit(std.testing.allocator);
-    try expect(result.? == .t_array);
-    try expect(result.?.t_array.items.len == 2);
+    var result = try parse(std.testing.allocator, buffer);
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_array);
+    try expect(result.t_array.items.len == 2);
 
-    try expect(result.?.t_array.items[0] == .t_string);
-    try expect(std.mem.eql(u8, result.?.t_array.items[0].t_string.getBufferConst(), "sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf"));
+    try expect(result.t_array.items[0] == .t_string);
+    try expect(std.mem.eql(u8, result.t_array.items[0].t_string.getBufferConst(), "sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf"));
 
-    try expect(result.?.t_array.items[1] == .t_boolean);
-    try expect(result.?.t_array.items[1].t_boolean == false);
+    try expect(result.t_array.items[1] == .t_boolean);
+    try expect(result.t_array.items[1].t_boolean == false);
 }
 
 test "json parse: array3" {
     const buffer = "[\"sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf\", dsfsf]";
     const result = parse(std.testing.allocator, buffer);
-    try expect(result == null);
+    try expect(result == ParseError.SyntaxError);
+}
+
+test "json parse: array4" {
+    const buffer = "[\"sdfsd\", dsfsf]";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result == ParseError.SyntaxError);
+}
+
+test "json parse: object" {
+    const buffer = "{\"x0\": null, \"y0\": 0, \"x1\": 1, \"y1\": true}";
+
+    var result = try parse(std.testing.allocator, buffer);
+    defer result.deinit(std.testing.allocator);
+    try expect(result == .t_object);
+    try expect(result.t_object.count() == 4);
+
+    {
+        var key = try String.create(std.testing.allocator, "x0");
+        defer key.deinit(std.testing.allocator);
+        try expect(result.t_object.contains(key));
+        const value = result.t_object.get(key);
+        try expect(value != null);
+        try expect(value.? == .t_null);
+    }
+
+    {
+        var key = try String.create(std.testing.allocator, "y0");
+        defer key.deinit(std.testing.allocator);
+        try expect(result.t_object.contains(key));
+        const value = result.t_object.get(key);
+        try expect(value != null);
+        try expect(value.? == .t_number);
+        try expect(value.?.t_number == 0);
+    }
+
+    {
+        var key = try String.create(std.testing.allocator, "x1");
+        defer key.deinit(std.testing.allocator);
+        try expect(result.t_object.contains(key));
+        const value = result.t_object.get(key);
+        try expect(value != null);
+        try expect(value.? == .t_number);
+        try expect(value.?.t_number == 1);
+    }
+
+    {
+        var key = try String.create(std.testing.allocator, "y1");
+        defer key.deinit(std.testing.allocator);
+        try expect(result.t_object.contains(key));
+        const value = result.t_object.get(key);
+        try expect(value != null);
+        try expect(value.? == .t_boolean);
+        try expect(value.?.t_boolean == true);
+    }
+}
+
+test "json parse: object2" {
+    const buffer = "{\"key1\": \"sdfjbkhlisdfhjlihsfkljdshfkjldhsflkdjslkfhndfkjghndsklfhdfkljgbdlksfhjldskhf\",\"key2\": null, \"key3\": \"sdfdjkbfkjdshjkfdsjkfbdjksfbkjdsbfjkdsbfjksdbfjkdsbfjkbsdfjkbsdkjfbsdjkfbdsjkfbjkdsbfjksdbf\",}";
+
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result == ParseError.SyntaxError);
 }
