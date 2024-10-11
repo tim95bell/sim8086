@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const expect = std.testing.expect;
+
 pub const ItemType = enum { t_null, t_boolean, t_string, t_number, t_object, t_array };
 
 pub const Item = union(ItemType) {
@@ -12,12 +14,21 @@ pub const Item = union(ItemType) {
 
     pub fn print(self: *const Item) void {
         switch (self.*) {
-            .t_null => std.debug.print("null\n", .{}),
-            .t_boolean => |data| std.debug.print("{s}\n", .{if (data) "true" else "false"}),
-            .t_string => |data| std.debug.print("\"{s}\"\n", .{data.getBufferConst()}),
-            .t_number => |data| std.debug.print("{d}\n", .{data}),
+            .t_null => std.debug.print("null", .{}),
+            .t_boolean => |data| std.debug.print("{s}", .{if (data) "true" else "false"}),
+            .t_string => |data| std.debug.print("\"{s}\"", .{data.getBufferConst()}),
+            .t_number => |data| std.debug.print("{d}", .{data}),
             .t_object => unreachable,
-            .t_array => unreachable,
+            .t_array => |data| {
+                std.debug.print("[", .{});
+                for (data.items, 0..) |x, i| {
+                    x.print();
+                    if (i < data.items.len - 1) {
+                        std.debug.print(", ", .{});
+                    }
+                }
+                std.debug.print("]", .{});
+            },
         }
     }
 
@@ -26,7 +37,13 @@ pub const Item = union(ItemType) {
             .t_string => |data| {
                 data.deinit(allocator);
             },
-            // TODO(TB): deinit t_array and t_object?
+            .t_array => |data| {
+                for (data.items) |x| {
+                    x.deinit(allocator);
+                }
+                data.deinit();
+            },
+            // TODO(TB): deinit t_object?
             else => {},
         }
     }
@@ -37,9 +54,8 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) ?Item {
 
     const item = parseNextItem(allocator, &tokenizer);
     if (item != null) {
-        var token = tokenizer.next(allocator);
-        defer token.deinit(allocator);
-        if (token.type == .t_end_of_stream) {
+        tokenizer.next(allocator);
+        if (tokenizer.token.type == .t_end_of_stream) {
             return item;
         }
 
@@ -51,17 +67,26 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) ?Item {
 }
 
 fn parseNextItem(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
-    var token = tokenizer.next(allocator);
-    defer token.deinit(allocator);
-    switch (token.type) {
+    tokenizer.peek(allocator);
+    switch (tokenizer.token.type) {
         .t_open_object => return parseNextObject(allocator, tokenizer),
         .t_open_array => return parseNextArray(allocator, tokenizer),
-        .t_null => return .t_null,
-        .t_number => |data| return .{ .t_number = data },
-        .t_boolean => |data| return .{ .t_boolean = data },
+        .t_null => {
+            tokenizer.next(allocator);
+            return .t_null;
+        },
+        .t_number => |data| {
+            tokenizer.next(allocator);
+            return .{ .t_number = data };
+        },
+        .t_boolean => |data| {
+            tokenizer.next(allocator);
+            return .{ .t_boolean = data };
+        },
         .t_string => |*data| {
             const result = .{ .t_string = data.* };
             data.release();
+            tokenizer.next(allocator);
             return result;
         },
         else => return null,
@@ -76,10 +101,36 @@ fn parseNextObject(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
 }
 
 fn parseNextArray(allocator: std.mem.Allocator, tokenizer: *Tokenizer) ?Item {
-    // TODO(TB):
-    _ = allocator;
-    _ = tokenizer;
-    return null;
+    tokenizer.next(allocator);
+    std.debug.assert(tokenizer.token.type == .t_open_array);
+    var items = std.ArrayList(Item).init(allocator);
+
+    while (true) {
+        tokenizer.peek(allocator);
+        if (tokenizer.token.type == .t_close_array) {
+            tokenizer.next(allocator);
+            return .{ .t_array = items };
+        } else if (tokenizer.token.type == .t_comma) {
+            if (items.items.len == 0) {
+                items.deinit();
+                return null;
+            }
+
+            tokenizer.next(allocator);
+        }
+
+        // TODO(TB): should parseNextItem directly into the memory of items
+        const item = parseNextItem(allocator, tokenizer);
+        if (item == null) {
+            items.deinit();
+            return null;
+        }
+
+        items.append(item.?) catch {
+            items.deinit();
+            return null;
+        };
+    }
 }
 
 pub const String = struct {
@@ -328,56 +379,143 @@ fn lexNumber(input: []const u8, start_index: usize) Token {
 
 pub const Tokenizer = struct {
     input: []const u8,
-    index: usize,
+    input_index: usize = 0,
+    token: Token = .{ .type = .t_invalid, .index = 0, .len = 0 },
+    peeked: bool = false,
 
     pub fn create(input: []const u8) Tokenizer {
         return .{
             .input = input,
-            .index = 0,
         };
-    }
-
-    pub fn init(self: *Tokenizer, input: []u8) void {
-        self.input = input;
-        self.index = 0;
     }
 
     fn skipWhiteSpace(self: *Tokenizer) void {
-        while (self.index < self.input.len and isWhiteSpace(self.input[self.index])) {
-            self.index += 1;
+        while (self.input_index < self.input.len and isWhiteSpace(self.input[self.input_index])) {
+            self.input_index += 1;
         }
     }
 
-    pub fn next(self: *Tokenizer, allocator: std.mem.Allocator) Token {
+    pub fn peek(self: *Tokenizer, allocator: std.mem.Allocator) void {
+        if (self.peeked) {
+            return;
+        }
+
+        self.token.deinit(allocator);
+        self.peeked = true;
         self.skipWhiteSpace();
 
-        if (self.index >= self.input.len) {
-            return .{ .type = .t_end_of_stream, .len = 0, .index = self.index };
+        if (self.input_index >= self.input.len) {
+            self.token = .{ .type = .t_end_of_stream, .len = 0, .index = self.input_index };
+            return;
         }
 
-        const result: Token = switch (self.input[self.index]) {
-            '{' => .{ .type = .t_open_object, .len = 1, .index = self.index },
-            '}' => .{ .type = .t_close_object, .len = 1, .index = self.index },
-            '[' => .{ .type = .t_open_array, .len = 1, .index = self.index },
-            ']' => .{ .type = .t_close_array, .len = 1, .index = self.index },
-            ':' => .{ .type = .t_colon, .len = 1, .index = self.index },
-            ',' => .{ .type = .t_comma, .len = 1, .index = self.index },
-            'n' => if (matchSymbol(self.input, self.index + 1, "ull"))
-                .{ .type = .t_null, .len = 4, .index = self.index }
+        self.token = switch (self.input[self.input_index]) {
+            '{' => .{ .type = .t_open_object, .len = 1, .index = self.input_index },
+            '}' => .{ .type = .t_close_object, .len = 1, .index = self.input_index },
+            '[' => .{ .type = .t_open_array, .len = 1, .index = self.input_index },
+            ']' => .{ .type = .t_close_array, .len = 1, .index = self.input_index },
+            ':' => .{ .type = .t_colon, .len = 1, .index = self.input_index },
+            ',' => .{ .type = .t_comma, .len = 1, .index = self.input_index },
+            'n' => if (matchSymbol(self.input, self.input_index + 1, "ull"))
+                .{ .type = .t_null, .len = 4, .index = self.input_index }
             else
-                .{ .type = .t_invalid, .len = 0, .index = self.index },
-            't' => if (matchSymbol(self.input, self.index + 1, "rue"))
-                .{ .type = .{ .t_boolean = true }, .len = 4, .index = self.index }
+                .{ .type = .t_invalid, .len = 0, .index = self.input_index },
+            't' => if (matchSymbol(self.input, self.input_index + 1, "rue"))
+                .{ .type = .{ .t_boolean = true }, .len = 4, .index = self.input_index }
             else
-                .{ .type = .t_invalid, .len = 0, .index = self.index },
-            'f' => if (matchSymbol(self.input, self.index + 1, "alse"))
-                .{ .type = .{ .t_boolean = false }, .len = 5, .index = self.index }
+                .{ .type = .t_invalid, .len = 0, .index = self.input_index },
+            'f' => if (matchSymbol(self.input, self.input_index + 1, "alse"))
+                .{ .type = .{ .t_boolean = false }, .len = 5, .index = self.input_index }
             else
-                .{ .type = .t_invalid, .len = 0, .index = self.index },
-            '"' => lexStringAfterOpenQuote(allocator, self.input, self.index + 1),
-            else => lexNumber(self.input, self.index),
+                .{ .type = .t_invalid, .len = 0, .index = self.input_index },
+            '"' => lexStringAfterOpenQuote(allocator, self.input, self.input_index + 1),
+            else => lexNumber(self.input, self.input_index),
         };
-        self.index += result.len;
-        return result;
+    }
+
+    pub fn next(self: *Tokenizer, allocator: std.mem.Allocator) void {
+        // TODO(TB): will this be a problem for the deinit?
+        self.peek(allocator);
+        self.input_index += self.token.len;
+        self.peeked = false;
     }
 };
+
+test "json parse: false" {
+    const result = parse(std.testing.allocator, "false");
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_boolean);
+    try expect(result.?.t_boolean == false);
+}
+
+test "json parse: true" {
+    const result = parse(std.testing.allocator, "true");
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_boolean);
+    try expect(result.?.t_boolean == true);
+}
+
+test "json parse: null" {
+    const result = parse(std.testing.allocator, "null");
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_null);
+}
+
+test "json parse: 3423324" {
+    const result = parse(std.testing.allocator, "3423324");
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_number);
+    try expect(result.?.t_number == 3423324);
+}
+
+test "json parse: 3423.324" {
+    const result = parse(std.testing.allocator, "3423.324");
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_number);
+    try expect(result.?.t_number == 3423.324);
+}
+
+test "json parse: small string with escapes" {
+    const buffer = "\"dfs\\\\sdfdfs\\\"dfdsfsdf\"";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_string);
+    try expect(result.?.t_string.len == 19);
+    try expect(result.?.t_string.type == .small_string);
+    try expect(std.mem.eql(u8, result.?.t_string.getBufferConst(), "dfs\\sdfdfs\"dfdsfsdf"));
+}
+
+test "json parse: large string" {
+    const buffer = "\"thisisalargestringdflklfndlfgndfjkgndslfnldsnflkdsfndklsjngfjkldsnfgwdsfljkndsjklfndslfgnfgdjlnl\"";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_string);
+    try expect(result.?.t_string.len == 96);
+    try expect(result.?.t_string.type == .large_string);
+    try expect(std.mem.eql(u8, result.?.t_string.getBufferConst(), buffer[1 .. buffer.len - 1]));
+}
+
+test "json parse: empty array" {
+    const buffer = "[]";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_array);
+    try expect(result.?.t_array.items.len == 0);
+}
+
+test "json parse: array" {
+    const buffer = "[null, false, [], true, [1, 2, \"hello\"]]";
+    const result = parse(std.testing.allocator, buffer);
+    try expect(result != null);
+    defer result.?.deinit(std.testing.allocator);
+    try expect(result.? == .t_array);
+    try expect(result.?.t_array.items.len == 5);
+}

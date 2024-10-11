@@ -1,6 +1,10 @@
 const std = @import("std");
 const sim8086 = @import("./sim8086/Cmd.zig");
 const haversine = @import("haversine/Cmd.zig");
+const Json = @import("haversine/Json.zig");
+
+// NOTE(TB): this is to make the tests in other modules get run
+usingnamespace Json;
 
 pub fn main() !void {
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
@@ -18,4 +22,7 @@ pub fn main() !void {
     } else {
         std.debug.print("unknown subprogram: {s}\n", .{args[1]});
     }
+
+test {
+    std.testing.refAllDecls(@This());
 }

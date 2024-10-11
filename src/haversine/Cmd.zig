@@ -19,13 +19,11 @@ pub fn run(args: [][:0]u8) !void {
     defer file.close();
 
     const mode: Generator.Mode =
-        if (std.mem.eql(u8, args[1], "uniform")) .uniform
-        else if (std.mem.eql(u8, args[1], "cluster")) .cluster
-        else {
-            std.debug.print("Unknown mode \"{s}\", must be \"uniform\" or \"cluster\"\n", .{args[1]});
-            printUsage();
-            return;
-        };
+        if (std.mem.eql(u8, args[1], "uniform")) .uniform else if (std.mem.eql(u8, args[1], "cluster")) .cluster else {
+        std.debug.print("Unknown mode \"{s}\", must be \"uniform\" or \"cluster\"\n", .{args[1]});
+        printUsage();
+        return;
+    };
 
     const random_seed: usize = std.fmt.parseInt(usize, args[2], 10) catch {
         std.debug.print("Invalid random seed: \"{s}\"\n", .{args[2]});
@@ -33,11 +31,11 @@ pub fn run(args: [][:0]u8) !void {
         return;
     };
 
-    const pair_count: usize =  std.fmt.parseInt(usize, args[3], 10) catch {
-            std.debug.print("Invalid number of coordinate pairs to generate: \"{s}\"\n", .{args[3]});
-            printUsage();
-            return;
-        };
+    const pair_count: usize = std.fmt.parseInt(usize, args[3], 10) catch {
+        std.debug.print("Invalid number of coordinate pairs to generate: \"{s}\"\n", .{args[3]});
+        printUsage();
+        return;
+    };
 
     try Generator.generate(file.writer(), mode, random_seed, pair_count);
 }
