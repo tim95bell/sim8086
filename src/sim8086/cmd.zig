@@ -1,5 +1,5 @@
 const std = @import("std");
-const runner = @import("runner_rename.zig");
+const runner = @import("runner.zig");
 
 pub fn run(args: [][:0]u8) !void {
     var file_name: []u8 = &.{};

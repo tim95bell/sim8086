@@ -1,6 +1,6 @@
 const std = @import("std");
-const sim8086 = @import("./sim8086/cmd_rename.zig");
-const haversine = @import("haversine/cmd_rename.zig");
+const sim8086 = @import("./sim8086/cmd.zig");
+const haversine = @import("haversine/cmd.zig");
 const json = @import("json.zig");
 
 pub fn main() !void {

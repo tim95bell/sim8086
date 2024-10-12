@@ -1,5 +1,5 @@
 const std = @import("std");
-const generator = @import("generator_rename.zig");
+const generator = @import("generator.zig");
 
 fn printUsage() void {
     std.debug.print("generator [file path] [uniform/cluster] [random seed] [number of coordinate pairs to generate]\n", .{});

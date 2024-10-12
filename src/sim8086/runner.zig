@@ -1,7 +1,7 @@
 const std = @import("std");
-const simulator = @import("simulator_rename.zig");
+const simulator = @import("simulator.zig");
 const Instruction = @import("Instruction.zig");
-const decoder = @import("decoder_rename.zig");
+const decoder = @import("decoder.zig");
 const ArrayListHelpers = @import("ArrayListHelpers.zig");
 const Context = @import("Context.zig");
 
