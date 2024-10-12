@@ -58,16 +58,15 @@ pub const Item = union(ItemType) {
 
 pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Item {
     var tokenizer = Tokenizer.create(input);
+    defer tokenizer.deinit(allocator);
 
     var item = try parseNextItem(allocator, &tokenizer);
+    errdefer item.deinit(allocator);
 
     tokenizer.next(allocator);
     if (tokenizer.token.type == .t_end_of_stream) {
         return item;
     }
-
-    // TODO(TB): could this use errdefer?
-    item.deinit(allocator);
 
     return ParseError.SyntaxError;
 }
@@ -396,6 +395,7 @@ fn matchSymbol(input: []const u8, index: usize, keyword: []const u8) bool {
 }
 
 fn lexNumber(input: []const u8, start_index: usize) Token {
+    // TODO(TB): negative numbers
     std.debug.assert(start_index < input.len);
     var index = start_index;
     if (!isNumeric(input[index])) {
@@ -435,11 +435,9 @@ fn lexNumber(input: []const u8, start_index: usize) Token {
         }
     }
 
-    // TODO(TB): len might be wrong here
     return .{ .type = .{ .t_number = result }, .index = start_index, .len = index - start_index };
 }
 
-// TODO(TB): Tokenizer needs a deinit so that the last token gets deinit
 pub const Tokenizer = struct {
     input: []const u8,
     input_index: usize = 0,
@@ -450,6 +448,10 @@ pub const Tokenizer = struct {
         return .{
             .input = input,
         };
+    }
+
+    pub fn deinit(self: *Tokenizer, allocator: std.mem.Allocator) void {
+        self.token.deinit(allocator);
     }
 
     fn skipWhiteSpace(self: *Tokenizer) void {
