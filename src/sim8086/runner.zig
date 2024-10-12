@@ -2,8 +2,9 @@ const std = @import("std");
 const simulator = @import("simulator.zig");
 const Instruction = @import("Instruction.zig");
 const decoder = @import("decoder.zig");
-const ArrayListHelpers = @import("ArrayListHelpers.zig");
+const array_list = @import("../array_list.zig");
 const Context = @import("Context.zig");
+const Memory = @import("Memory.zig");
 
 fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *usize, labels: std.ArrayList(usize)) !void {
     if (next_label_index.* < labels.items.len) {
@@ -16,10 +17,10 @@ fn printLabel(writer: std.fs.File.Writer, byte_index: usize, next_label_index: *
     }
 }
 
-fn print(writer: std.fs.File.Writer, instruction: Instruction.Instruction) !void {
+fn print(writer: std.fs.File.Writer, instruction: Instruction) !void {
     var operand_buffer: [2][32]u8 = undefined;
-    const operand_1_label = Instruction.getOperandLabel(instruction.operand[0], &operand_buffer[0]);
-    const instruction_type_string = Instruction.getInstructionTypeString(instruction.type);
+    const operand_1_label = instruction.operand[0].getLabel(&operand_buffer[0]);
+    const instruction_type_string = Instruction.getTypeString(instruction.type);
     if (instruction.operand[1].type == .none) {
         try writer.print("{s} {s}", .{
             instruction_type_string,
@@ -31,31 +32,31 @@ fn print(writer: std.fs.File.Writer, instruction: Instruction.Instruction) !void
                 instruction_type_string,
                 if (instruction.wide) "word" else "byte",
                 operand_1_label,
-                Instruction.getOperandLabel(instruction.operand[1], &operand_buffer[1]),
+                instruction.operand[1].getLabel(&operand_buffer[1]),
             });
         } else {
             try writer.print("{s} {s}, {s}", .{
                 instruction_type_string,
                 operand_1_label,
-                Instruction.getOperandLabel(instruction.operand[1], &operand_buffer[1]),
+                instruction.operand[1].getLabel(&operand_buffer[1]),
             });
         }
     }
 }
 
-fn printWithLabels(writer: std.fs.File.Writer, instruction: Instruction.Instruction, byte_index: usize, labels: std.ArrayList(usize)) !void {
+fn printWithLabels(writer: std.fs.File.Writer, instruction: Instruction, byte_index: usize, labels: std.ArrayList(usize)) !void {
     const maybe_jump_ip_inc8 = Instruction.getJumpIpInc8(instruction);
     if (maybe_jump_ip_inc8) |jump_ip_inc8| {
         const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + jump_ip_inc8)) + instruction.size;
-        const index: usize = ArrayListHelpers.findValueIndex(labels, label_byte_index).?;
-        try writer.print("{s} test_label{d}", .{ Instruction.getInstructionTypeString(instruction.type), index });
+        const index: usize = array_list.findValueIndex(labels, label_byte_index).?;
+        try writer.print("{s} test_label{d}", .{ Instruction.getTypeString(instruction.type), index });
     } else {
         try print(writer, instruction);
     }
 }
 
-fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, context: *Context.Context) !void {
-    var instructions = try std.ArrayList(Instruction.Instruction).initCapacity(allocator, context.program_size / 2);
+fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, context: *Context) !void {
+    var instructions = try std.ArrayList(Instruction).initCapacity(allocator, context.program_size / 2);
     defer instructions.deinit();
 
     var labels = std.ArrayList(usize).init(allocator);
@@ -70,7 +71,7 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, c
         if (maybe_jump_ip_inc8) |jump_ip_inc8| {
             // TODO(TB): consider overflow
             const jump_byte: usize = @as(usize, @intCast(@as(isize, @intCast(context.register.named_word.ip)) + jump_ip_inc8));
-            try ArrayListHelpers.insertSortedSetArrayList(&labels, jump_byte);
+            try array_list.insertSortedSetArrayList(&labels, jump_byte);
         }
     }
 
@@ -89,7 +90,7 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, c
     try printLabel(writer, byte_index, &next_label_index, labels);
 }
 
-fn getEAClocks(mem: Instruction.Memory) u8 {
+fn getEAClocks(mem: Memory) u8 {
     if (mem.reg[0].index == .none) {
         // displacement only
         std.debug.assert(mem.reg[1].index == .none);
@@ -153,7 +154,7 @@ fn getEAClocks(mem: Instruction.Memory) u8 {
     }
 }
 
-fn getClocks(instruction: Instruction.Instruction) struct { u8, u8 } {
+fn getClocks(instruction: Instruction) struct { u8, u8 } {
     switch (instruction.type) {
         .mov => {
             switch (instruction.operand[0].type) {
@@ -258,7 +259,7 @@ fn getClocks(instruction: Instruction.Instruction) struct { u8, u8 } {
     }
 }
 
-fn getClocksString(instruction: Instruction.Instruction, clocks: *u64, buffer: []u8) ![]u8 {
+fn getClocksString(instruction: Instruction, clocks: *u64, buffer: []u8) ![]u8 {
     const base_clocks, const ea_clocks = getClocks(instruction);
     const total = base_clocks + ea_clocks;
     clocks.* += total;
@@ -270,7 +271,7 @@ fn getClocksString(instruction: Instruction.Instruction, clocks: *u64, buffer: [
     return std.fmt.bufPrint(buffer, "+{d} = {d}", .{ total, clocks.* });
 }
 
-fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context.Context, dump: bool, print_clocks: bool) !void {
+fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context, dump: bool, print_clocks: bool) !void {
     var clocks: u64 = 0;
     _ = try writer.print("\n", .{});
     while (context.register.named_word.ip < context.program_size) {
@@ -317,7 +318,7 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context.Context, du
     }
 }
 
-fn printRegisters(writer: std.fs.File.Writer, context: *const Context.Context) !void {
+fn printRegisters(writer: std.fs.File.Writer, context: *const Context) !void {
     _ = try writer.print("; Final registers:\n", .{});
     if (context.register.named_word.ax != 0) {
         _ = try writer.print(";      ax: 0x{x:0>4} ({0d})\n", .{context.register.named_word.ax});
@@ -420,7 +421,7 @@ pub fn run(args: Args) !void {
     //const writer = bw.writer();
     //try bw.flush(); // don't forget to flush!
     const out = std.io.getStdOut().writer();
-    var context: *Context.Context = try gpa.create(Context.Context);
+    var context: *Context = try gpa.create(Context);
     defer gpa.destroy(context);
     context.init();
     context.program_size = @intCast(try file.read(&context.memory));

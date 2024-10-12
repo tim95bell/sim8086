@@ -1,5 +1,5 @@
 const std = @import("std");
-const HaversineFormula = @import("HaversineFormula.zig");
+const haversine_formula = @import("haversine_formula.zig");
 
 const Coordinate = struct {
     x: f64,
@@ -79,7 +79,7 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
     if (mode == .uniform) {
         for (0..pair_count) |i| {
             pair.randomize(rand);
-            total += HaversineFormula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, HaversineFormula.default_earth_radius);
+            total += haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
             try buffered_writer_writer.print("\t", .{});
             try pair.print(buffered_writer_writer);
             if (i < pair_count - 1) {
@@ -101,7 +101,7 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
             cluster_b_center.randomize(rand);
             for (0..larger_cluster_group_count) |_| {
                 pair.randomize_cluster(rand, cluster_a_center, cluster_b_center, cluster_radius);
-                total += HaversineFormula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, HaversineFormula.default_earth_radius);
+                total += haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
                 try buffered_writer_writer.print("\t", .{});
                 try pair.print(buffered_writer_writer);
                 if (pair_index < pair_count - 1) {
@@ -115,7 +115,7 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
             cluster_b_center.randomize(rand);
             for (0..cluster_group_count) |_| {
                 pair.randomize_cluster(rand, cluster_a_center, cluster_b_center, cluster_radius);
-                total += HaversineFormula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, HaversineFormula.default_earth_radius);
+                total += haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
                 try buffered_writer_writer.print("\t", .{});
                 try pair.print(buffered_writer_writer);
                 if (pair_index < pair_count - 1) {

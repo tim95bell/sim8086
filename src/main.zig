@@ -1,6 +1,6 @@
 const std = @import("std");
-const sim8086 = @import("./sim8086/cmd.zig");
-const haversine = @import("haversine/cmd.zig");
+const sim8086 = @import("sim8086.zig");
+const haversine = @import("haversine.zig");
 const json = @import("json.zig");
 
 pub fn main() !void {
@@ -13,9 +13,9 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, args[1], "sim8086")) {
-        try sim8086.run(args[2..]);
+        try sim8086.cmd.run(args[2..]);
     } else if (std.mem.eql(u8, args[1], "haversine")) {
-        try haversine.run(args[2..]);
+        try haversine.cmd.run(args[2..]);
     } else {
         std.debug.print("unknown subprogram: {s}\n", .{args[1]});
     }
@@ -23,4 +23,6 @@ pub fn main() !void {
 
 test {
     std.testing.refAllDecls(json);
+    std.testing.refAllDecls(sim8086);
+    std.testing.refAllDecls(haversine);
 }

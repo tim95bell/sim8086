@@ -1,6 +1,8 @@
 const std = @import("std");
 const Instruction = @import("Instruction.zig");
 const Context = @import("Context.zig");
+const Register = @import("Register.zig");
+const Memory = @import("Memory.zig");
 
 fn extractModRegRm(data: u8) struct { u2, u3, u3 } {
     // TODO(TB): try doing this with a packed struct
@@ -22,40 +24,38 @@ fn extractUnsignedWord(data: [*]const u8, wide: bool) u16 {
 fn extractUnsignedWordSignExtend(data: [*]const u8, wide: bool, sign_extend: bool) u16 {
     return if (wide)
         (if (sign_extend) @bitCast(@as(i16, @as(i8, @bitCast(data[0])))) else data[0] | (@as(u16, data[1]) << 8))
-        else data[0];
+    else
+        data[0];
 }
 
-fn decodeImmToReg(instruction_type: Instruction.InstructionType, context: *const Context.Context) Instruction.Instruction {
+fn decodeImmToReg(instruction_type: Instruction.Type, context: *const Context) Instruction {
     const data = context.memory[0..];
     const index = context.register.named_word.ip;
     const w: u1 = @intCast((data[index] & 0b00001000) >> 3);
     return .{
         .address = @intCast(index),
         .type = instruction_type,
-        .operand = .{
-            .{
-                .type = .{
-                    .register = Instruction.regFieldEncoding(w, @intCast(data[index] & 0b00000111)),
-                },
+        .operand = .{ .{
+            .type = .{
+                .register = Register.regFieldEncoding(w, @intCast(data[index] & 0b00000111)),
             },
-            .{
-                .type = .{
-                    .immediate = extractUnsignedWord(data.ptr + index + 1, w != 0),
-                },
-            }
-        },
+        }, .{
+            .type = .{
+                .immediate = extractUnsignedWord(data.ptr + index + 1, w != 0),
+            },
+        } },
         .size = 2 + @as(u8, w),
         .wide = w != 0,
     };
 }
 
-fn decodeAddSubCmpRegToFromRegMem(context: *const Context.Context) Instruction.Instruction {
+fn decodeAddSubCmpRegToFromRegMem(context: *const Context) Instruction {
     const data = context.memory[0..];
     const index = context.register.named_word.ip;
     return decodeRegToFromRegMem(extractAddSubCmpType(@intCast((data[index] >> 3) & 0b00000111)), context);
 }
 
-fn decodeRegToFromRegMem(instruction_type: Instruction.InstructionType, context: *const Context.Context) Instruction.Instruction {
+fn decodeRegToFromRegMem(instruction_type: Instruction.Type, context: *const Context) Instruction {
     const index = context.register.named_word.ip;
     const data = context.memory[0..];
     const d: bool = data[context.register.named_word.ip] & 0b00000010 != 0;
@@ -63,17 +63,17 @@ fn decodeRegToFromRegMem(instruction_type: Instruction.InstructionType, context:
 
     const mod, const reg, const rm = extractModRegRm(data[index + 1]);
     const displacement: [*]const u8 = data.ptr + index + 2;
-    var instruction: Instruction.Instruction = .{
+    var instruction: Instruction = .{
         .type = instruction_type,
         .address = @intCast(index),
         .operand = undefined,
         .size = undefined,
         .wide = w != 0,
     };
-    instruction.operand[if (d) 0 else 1] = .{ .type = .{ .register = Instruction.regFieldEncoding(w, reg) } };
+    instruction.operand[if (d) 0 else 1] = .{ .type = .{ .register = Register.regFieldEncoding(w, reg) } };
     const rm_operand_index: u1 = if (d) 1 else 0;
     if (mod == 0b11) {
-        instruction.operand[rm_operand_index] = .{ .type = .{ .register = Instruction.regFieldEncoding(w, rm) } };
+        instruction.operand[rm_operand_index] = .{ .type = .{ .register = Register.regFieldEncoding(w, rm) } };
         instruction.size = 2;
     } else {
         // mod = 00, 01, or 10
@@ -88,7 +88,7 @@ fn decodeRegToFromRegMem(instruction_type: Instruction.InstructionType, context:
     return instruction;
 }
 
-fn extractAddSubCmpType(bits: u3) Instruction.InstructionType {
+fn extractAddSubCmpType(bits: u3) Instruction.Type {
     return switch (bits) {
         0b000 => .add,
         0b101 => .sub,
@@ -97,7 +97,7 @@ fn extractAddSubCmpType(bits: u3) Instruction.InstructionType {
     };
 }
 
-fn decodeAddSubCmpImmToAcc(context: *const Context.Context) Instruction.Instruction {
+fn decodeAddSubCmpImmToAcc(context: *const Context) Instruction {
     const data = context.memory[0..];
     const index = context.register.named_word.ip;
     const wide: bool = (data[index] & 0b1) != 0;
@@ -125,7 +125,7 @@ fn decodeAddSubCmpImmToAcc(context: *const Context.Context) Instruction.Instruct
     };
 }
 
-fn decodeAddSubCmpImmToRegMem(context: *const Context.Context) Instruction.Instruction {
+fn decodeAddSubCmpImmToRegMem(context: *const Context) Instruction {
     const data = context.memory[0..];
     const index = context.register.named_word.ip;
     _, const reg, _ = extractModRegRm(data[index + 1]);
@@ -133,7 +133,7 @@ fn decodeAddSubCmpImmToRegMem(context: *const Context.Context) Instruction.Instr
     return decodeImmToRegMem(extractAddSubCmpType(reg), context, s);
 }
 
-fn decodeImmToRegMem(instruction_type: Instruction.InstructionType, context: *const Context.Context, s: u1) Instruction.Instruction {
+fn decodeImmToRegMem(instruction_type: Instruction.Type, context: *const Context, s: u1) Instruction {
     const data = context.memory[0..];
     const i = context.register.named_word.ip;
     const w: u1 = @truncate(data[i]);
@@ -145,7 +145,7 @@ fn decodeImmToRegMem(instruction_type: Instruction.InstructionType, context: *co
     const wide_immediate = s == 0 and w == 1;
     const immediate: u16 = extractUnsignedWordSignExtend(data.ptr + i + immediate_index_offset, w != 0, s != 0);
 
-    var instruction: Instruction.Instruction = .{
+    var instruction: Instruction = .{
         .type = instruction_type,
         .address = @intCast(i),
         .operand = undefined,
@@ -159,7 +159,7 @@ fn decodeImmToRegMem(instruction_type: Instruction.InstructionType, context: *co
     if (mod == 0b11) {
         // imm to reg
         instruction.operand[0].type = .{
-            .register = Instruction.regFieldEncoding(w, rm),
+            .register = Register.regFieldEncoding(w, rm),
         };
         instruction.size = if (wide_immediate) 4 else 3;
     } else {
@@ -175,7 +175,7 @@ fn decodeImmToRegMem(instruction_type: Instruction.InstructionType, context: *co
     return instruction;
 }
 
-fn decodeRegMemToFromSegmentRegister(comptime d: bool, context: *const Context.Context) Instruction.Instruction {
+fn decodeRegMemToFromSegmentRegister(comptime d: bool, context: *const Context) Instruction {
     const i = context.register.named_word.ip;
     const mod: u2 = @intCast(context.memory[i + 1] >> 6);
     std.debug.assert((context.memory[i + 1] & 0b00100000) == 0);
@@ -183,7 +183,7 @@ fn decodeRegMemToFromSegmentRegister(comptime d: bool, context: *const Context.C
     const rm: u3 = @intCast(context.memory[i + 1] & 0b111);
     const displacement = (&context.memory).ptr + 2;
     var displacement_size: u8 = undefined;
-    var instruction: Instruction.Instruction = .{
+    var instruction: Instruction = .{
         .type = .mov,
         .address = @intCast(i),
         .operand = undefined,
@@ -211,13 +211,13 @@ fn decodeRegMemToFromSegmentRegister(comptime d: bool, context: *const Context.C
     return instruction;
 }
 
-fn createMem(mod: u2, rm: u3, w: bool, displacement: [*]const u8, displacement_size_out: *u8) Instruction.Memory {
+fn createMem(mod: u2, rm: u3, w: bool, displacement: [*]const u8, displacement_size_out: *u8) Memory {
     std.debug.assert(mod != 0b11);
     const displacement_only = mod == 0b00 and rm == 0b110;
     const displacement_size = if (displacement_only) 2 else if (mod == 0b11) 0 else mod;
     displacement_size_out.* = displacement_size;
     std.debug.assert(displacement_size == 0 or displacement_size == 1 or displacement_size == 2);
-    var result: Instruction.Memory = .{
+    var result: Memory = .{
         .displacement = if (displacement_size > 0) extractSignedWord(displacement, displacement_size == 2) else 0,
         .size = if (w) .word else .byte,
         .reg = .{
@@ -273,13 +273,13 @@ fn createMem(mod: u2, rm: u3, w: bool, displacement: [*]const u8, displacement_s
 fn createRm(mod: u2, rm: u3, w: u1, displacement: [*]const u8, displacement_size_out: *u8) Instruction.Operand {
     if (mod == 0b11) {
         displacement_size_out.* = 0;
-        return .{ .type = .{ .register = Instruction.regFieldEncoding(w, rm) } };
+        return .{ .type = .{ .register = Register.regFieldEncoding(w, rm) } };
     } else {
         return .{ .type = .{ .memory = createMem(mod, rm, w != 0, displacement, displacement_size_out) } };
     }
 }
 
-pub fn decode(context: *const Context.Context) ?Instruction.Instruction {
+pub fn decode(context: *const Context) ?Instruction {
     const data = context.memory[0..];
     const i = context.register.named_word.ip;
     if ((data[i] & 0b11110000) == 0b10110000) {
@@ -296,7 +296,7 @@ pub fn decode(context: *const Context.Context) ?Instruction.Instruction {
         const d: bool = data[i] & 0b00000010 == 0;
         const wide = data[i] & 0b1 != 0;
 
-        var instruction: Instruction.Instruction = .{
+        var instruction: Instruction = .{
             .type = .mov,
             .address = @intCast(i),
             .operand = undefined,
@@ -315,8 +315,8 @@ pub fn decode(context: *const Context.Context) ?Instruction.Instruction {
         instruction.operand[mem_index].type = .{
             .memory = .{
                 .reg = .{
-                    Instruction.Register.none,
-                    Instruction.Register.none,
+                    Register.none,
+                    Register.none,
                 },
                 .size = if (wide) .word else .byte,
                 // TODO(TB): displacement in this case should be unsigned?
@@ -365,7 +365,7 @@ pub fn decode(context: *const Context.Context) ?Instruction.Instruction {
             .operand = .{
                 .{ .type = .{
                     .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
-                }},
+                } },
                 .{ .type = .none },
             },
             .size = 2,
@@ -385,7 +385,7 @@ pub fn decode(context: *const Context.Context) ?Instruction.Instruction {
             .operand = .{
                 .{ .type = .{
                     .relative_jump_displacement = @as(i8, @bitCast(data[i + 1])),
-                }},
+                } },
                 .{ .type = .none },
             },
             .size = 2,

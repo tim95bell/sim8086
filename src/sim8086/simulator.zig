@@ -1,6 +1,8 @@
 const std = @import("std");
 const Instruction = @import("Instruction.zig");
 const Context = @import("Context.zig");
+const Register = @import("Register.zig");
+const Memory = @import("Memory.zig");
 
 // ReadWriteAddress : a pointer to a register or memory, and the width
 pub const ReadWriteAddress = struct {
@@ -80,16 +82,7 @@ pub fn printFlags(flags: u16, buffer: []u8) []u8 {
 }
 
 fn parity(x: u8) bool {
-    return (
-        (x & 0b1)
-        + ((x >> 1) & 0b1)
-        + ((x >> 2) & 0b1)
-        + ((x >> 3) & 0b1)
-        + ((x >> 4) & 0b1)
-        + ((x >> 5) & 0b1)
-        + ((x >> 6) & 0b1)
-        + ((x >> 7) & 0b1)
-    ) % 2 == 0;
+    return ((x & 0b1) + ((x >> 1) & 0b1) + ((x >> 2) & 0b1) + ((x >> 3) & 0b1) + ((x >> 4) & 0b1) + ((x >> 5) & 0b1) + ((x >> 6) & 0b1) + ((x >> 7) & 0b1)) % 2 == 0;
 }
 
 fn testBit(x: anytype, n: anytype) bool {
@@ -97,8 +90,7 @@ fn testBit(x: anytype, n: anytype) bool {
 }
 
 fn getCarry(a: anytype, b: anytype, c: anytype, n: anytype) bool {
-    return if (testBit(a, n) != testBit(b, n)) !testBit(c, n)
-        else testBit(c, n);
+    return if (testBit(a, n) != testBit(b, n)) !testBit(c, n) else testBit(c, n);
 }
 
 fn getBorrow(a: anytype, b: anytype, c: anytype, n: anytype) bool {
@@ -138,7 +130,7 @@ fn updateSubFlags(a: i17, b: i17, c: i17, wide: bool, flags: *u16) void {
     setFlag(flags, .flag_af, getBorrow(a, b, c, 4));
 }
 
-fn sub(operand: [2]Instruction.Operand, context: *Context.Context) struct { ReadWriteAddress, i17, i17, i17 } {
+fn sub(operand: [2]Instruction.Operand, context: *Context) struct { ReadWriteAddress, i17, i17, i17 } {
     const dst_address: ReadWriteAddress = createReadWriteAddress(operand[0], context);
     const a: i17 = readSigned(dst_address);
     const b: i17 = getSrcOperandValueSigned(operand[1], context);
@@ -146,7 +138,7 @@ fn sub(operand: [2]Instruction.Operand, context: *Context.Context) struct { Read
     return .{ dst_address, a, b, c };
 }
 
-fn getRegisterValueUnsigned(register: Instruction.Register, context: *const Context.Context) u16 {
+fn getRegisterValueUnsigned(register: Register, context: *const Context) u16 {
     if (register.size == .byte) {
         std.debug.assert(register.index != .none);
         return context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
@@ -158,7 +150,7 @@ fn getRegisterValueUnsigned(register: Instruction.Register, context: *const Cont
     }
 }
 
-fn getRegisterValueSigned(register: Instruction.Register, context: *const Context.Context) i16 {
+fn getRegisterValueSigned(register: Register, context: *const Context) i16 {
     if (register.size == .byte) {
         std.debug.assert(register.index != .none);
         return @as(i8, @bitCast(context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)]));
@@ -170,7 +162,7 @@ fn getRegisterValueSigned(register: Instruction.Register, context: *const Contex
     }
 }
 
-fn getRegisterBytePtr(register: Instruction.Register, context: *Context.Context) *u8 {
+fn getRegisterBytePtr(register: Register, context: *Context) *u8 {
     std.debug.assert(register.size == .byte);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
@@ -178,7 +170,7 @@ fn getRegisterBytePtr(register: Instruction.Register, context: *Context.Context)
     return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
 }
 
-fn getRegisterBytePtrConst(register: Instruction.Register, context: *const Context.Context) *const u8 {
+fn getRegisterBytePtrConst(register: Register, context: *const Context) *const u8 {
     std.debug.assert(register.size == .byte);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
     std.debug.assert((register.index != .sp and register.index != .bp and register.index != .si and register.index != .di) or (register.size == .word and register.offset == .none));
@@ -186,7 +178,7 @@ fn getRegisterBytePtrConst(register: Instruction.Register, context: *const Conte
     return &context.register.byte[@intFromEnum(register.index)][@intFromEnum(register.offset)];
 }
 
-fn getRegisterWordPtr(register: Instruction.Register, context: *Context.Context) *u16 {
+fn getRegisterWordPtr(register: Register, context: *Context) *u16 {
     std.debug.assert(register.size == .word);
     std.debug.assert(register.offset == .none);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
@@ -195,7 +187,7 @@ fn getRegisterWordPtr(register: Instruction.Register, context: *Context.Context)
     return &context.register.word[@intFromEnum(register.index)];
 }
 
-fn getRegisterWordPtrConst(register: Instruction.Register, context: *const Context.Context) *const u16 {
+fn getRegisterWordPtrConst(register: Register, context: *const Context) *const u16 {
     std.debug.assert(register.size == .word);
     std.debug.assert(register.offset == .none);
     std.debug.assert((register.offset != .byte) or (register.size == .byte));
@@ -204,7 +196,7 @@ fn getRegisterWordPtrConst(register: Instruction.Register, context: *const Conte
     return &context.register.word[@intFromEnum(register.index)];
 }
 
-fn getSrcOperandValue(operand: Instruction.Operand, context: *Context.Context) u16 {
+fn getSrcOperandValue(operand: Instruction.Operand, context: *Context) u16 {
     switch (operand.type) {
         .register => |data| {
             if (data.size == .byte) {
@@ -223,7 +215,7 @@ fn getSrcOperandValue(operand: Instruction.Operand, context: *Context.Context) u
     }
 }
 
-fn getSrcOperandValueSigned(operand: Instruction.Operand, context: *Context.Context) i16 {
+fn getSrcOperandValueSigned(operand: Instruction.Operand, context: *Context) i16 {
     switch (operand.type) {
         .register => |data| {
             if (data.size == .byte) {
@@ -266,7 +258,7 @@ fn readSigned(src: ReadWriteAddress) i16 {
     }
 }
 
-fn getMemoryIndex(memory: Instruction.Memory, context: *const Context.Context) u32 {
+fn getMemoryIndex(memory: Memory, context: *const Context) u32 {
     // TODO(TB): handle negative index?
     if (memory.reg[0].index == .none) {
         // NOTE(TB): displacement is treated as unsigned when not adding to registers
@@ -282,7 +274,7 @@ fn getMemoryIndex(memory: Instruction.Memory, context: *const Context.Context) u
     }
 }
 
-fn createReadWriteAddressFromMemory(memory: Instruction.Memory, context: *Context.Context) ReadWriteAddress {
+fn createReadWriteAddressFromMemory(memory: Memory, context: *Context) ReadWriteAddress {
     const index: u32 = getMemoryIndex(memory, context);
     return .{
         .data = @ptrCast(&context.memory[index]),
@@ -290,7 +282,7 @@ fn createReadWriteAddressFromMemory(memory: Instruction.Memory, context: *Contex
     };
 }
 
-fn createReadWriteAddress(operand: Instruction.Operand, context: *Context.Context) ReadWriteAddress {
+fn createReadWriteAddress(operand: Instruction.Operand, context: *Context) ReadWriteAddress {
     switch (operand.type) {
         .register => |data| {
             return .{
@@ -305,7 +297,7 @@ fn createReadWriteAddress(operand: Instruction.Operand, context: *Context.Contex
     }
 }
 
-pub fn simulateInstruction(instruction: Instruction.Instruction, context: *Context.Context) void {
+pub fn simulateInstruction(instruction: Instruction, context: *Context) void {
     context.register.named_word.ip += instruction.size;
 
     if (instruction.operand[0].type != .none) {
@@ -450,7 +442,7 @@ pub fn simulateInstruction(instruction: Instruction.Instruction, context: *Conte
             }
         },
         else => {
-            std.debug.print("unimplemented operation: {s}\n", .{Instruction.getInstructionTypeString(instruction.type)});
+            std.debug.print("unimplemented operation: {s}\n", .{Instruction.getTypeString(instruction.type)});
         },
     }
 }
