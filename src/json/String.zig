@@ -2,7 +2,18 @@ const std = @import("std");
 
 const Self = @This();
 
+pub const HashMapContext = struct {
+    pub fn eql(_: HashMapContext, a: Self, b: Self) bool {
+        return Self.equal(&a, &b);
+    }
+
+    pub fn hash(_: HashMapContext, x: Self) u64 {
+        return x.hash();
+    }
+};
+
 type: union(enum) {
+    reference_string: [*]const u8,
     small_string: [32]u8,
     large_string: [*]u8,
 },
@@ -24,17 +35,32 @@ pub fn create(allocator: std.mem.Allocator, data: []const u8) !Self {
     return result;
 }
 
+pub fn reference(data: []const u8) Self {
+    return .{
+        .type = .{ .reference_string = data.ptr },
+        .len = data.len,
+    };
+}
+
+pub fn equal(a: *const Self, b: *const Self) bool {
+    return a.len == b.len and std.mem.eql(u8, a.getBufferConst()[0..a.len], b.getBufferConst()[0..b.len]);
+}
+
+pub fn hash(self: *const Self) u64 {
+    return std.hash_map.hashString(self.getBufferConst()[0..self.len]);
+}
+
 pub fn getBuffer(self: *Self) []u8 {
     return switch (self.type) {
         .small_string => |*data| data[0..self.len],
-        .large_string => |data| data[0..self.len],
+        .large_string, .reference_string => |data| data[0..self.len],
     };
 }
 
 pub fn getBufferConst(self: *const Self) []const u8 {
     return switch (self.type) {
         .small_string => |*data| data[0..self.len],
-        .large_string => |data| data[0..self.len],
+        .large_string, .reference_string => |data| data[0..self.len],
     };
 }
 

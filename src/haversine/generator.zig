@@ -57,18 +57,12 @@ const CoordinatePair = struct {
 
 pub const Mode = enum { uniform, cluster };
 
-pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair_count: usize) !void {
+pub fn generate(json_writer: anytype, answers_writer: anytype, mode: Mode, random_seed: usize, pair_count: usize) !void {
     var prng = std.rand.DefaultPrng.init(random_seed);
     const rand = prng.random();
 
-    var buffered_writer = std.io.bufferedWriter(writer);
-    defer buffered_writer.flush() catch {
-        std.debug.print("Failed to flush buffered writer\n", .{});
-    };
-    var buffered_writer_writer = buffered_writer.writer();
-
     var total: f64 = 0;
-    try buffered_writer_writer.print("{{\"pairs\": [\n", .{});
+    try json_writer.print("{{\"pairs\": [\n", .{});
     var pair: CoordinatePair = undefined;
 
     const cluster_count = 64;
@@ -79,11 +73,16 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
     if (mode == .uniform) {
         for (0..pair_count) |i| {
             pair.randomize(rand);
-            total += haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
-            try buffered_writer_writer.print("\t", .{});
-            try pair.print(buffered_writer_writer);
+            const result = haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
+            total += result;
+            {
+                const bytes_written = try answers_writer.write(@as([*]const u8, @ptrCast(&result))[0..8]);
+                std.debug.assert(bytes_written == 8);
+            }
+            try json_writer.print("\t", .{});
+            try pair.print(json_writer);
             if (i < pair_count - 1) {
-                try buffered_writer_writer.print(",\n", .{});
+                try json_writer.print(",\n", .{});
             }
         }
     } else {
@@ -101,11 +100,16 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
             cluster_b_center.randomize(rand);
             for (0..larger_cluster_group_count) |_| {
                 pair.randomize_cluster(rand, cluster_a_center, cluster_b_center, cluster_radius);
-                total += haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
-                try buffered_writer_writer.print("\t", .{});
-                try pair.print(buffered_writer_writer);
+                const result = haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
+                total += result;
+                {
+                    const bytes_written = try answers_writer.write(@as([*]const u8, @ptrCast(&result))[0..8]);
+                    std.debug.assert(bytes_written == 8);
+                }
+                try json_writer.print("\t", .{});
+                try pair.print(json_writer);
                 if (pair_index < pair_count - 1) {
-                    try buffered_writer_writer.print(",\n", .{});
+                    try json_writer.print(",\n", .{});
                 }
                 pair_index += 1;
             }
@@ -115,18 +119,23 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
             cluster_b_center.randomize(rand);
             for (0..cluster_group_count) |_| {
                 pair.randomize_cluster(rand, cluster_a_center, cluster_b_center, cluster_radius);
-                total += haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
-                try buffered_writer_writer.print("\t", .{});
-                try pair.print(buffered_writer_writer);
+                const result = haversine_formula.referenceHaversine(pair.a.x, pair.a.y, pair.b.x, pair.b.y, haversine_formula.default_earth_radius);
+                total += result;
+                {
+                    const bytes_written = try answers_writer.write(@as([*]const u8, @ptrCast(&result))[0..8]);
+                    std.debug.assert(bytes_written == 8);
+                }
+                try json_writer.print("\t", .{});
+                try pair.print(json_writer);
                 if (pair_index < pair_count - 1) {
-                    try buffered_writer_writer.print(",\n", .{});
+                    try json_writer.print(",\n", .{});
                 }
                 pair_index += 1;
             }
         }
     }
 
-    try buffered_writer_writer.print("\n]}}", .{});
+    try json_writer.print("\n]}}", .{});
 
     std.debug.print("Method: {s}\n", .{if (mode == .uniform) "uniform" else "cluster"});
     if (mode == .cluster) {
@@ -144,5 +153,9 @@ pub fn generate(writer: std.fs.File.Writer, mode: Mode, random_seed: usize, pair
     std.debug.print("Random seed: {d}\n", .{random_seed});
     std.debug.print("Pair count: {d}\n", .{pair_count});
     const average = total / @as(f64, @floatFromInt(pair_count));
+    {
+        const bytes_written = try answers_writer.write(@as([*]const u8, @ptrCast(&average))[0..8]);
+        std.debug.assert(bytes_written == 8);
+    }
     std.debug.print("Expected sum: {d}\n", .{average});
 }

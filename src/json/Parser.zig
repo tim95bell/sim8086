@@ -5,12 +5,15 @@ const Lexer = @import("Lexer.zig");
 pub const ItemType = enum { t_null, t_boolean, t_string, t_number, t_object, t_array };
 
 pub const Item = union(ItemType) {
+    pub const Object = std.HashMap(String, Item, String.HashMapContext, std.hash_map.default_max_load_percentage);
+    pub const Array = std.ArrayList(Item);
+
     t_null: void,
     t_boolean: bool,
     t_string: String,
     t_number: f64,
-    t_object: std.AutoHashMap(String, Item),
-    t_array: std.ArrayList(Item),
+    t_object: Object,
+    t_array: Array,
 
     pub fn print(self: *const Item) void {
         switch (self.*) {
@@ -18,7 +21,15 @@ pub const Item = union(ItemType) {
             .t_boolean => |data| std.debug.print("{s}", .{if (data) "true" else "false"}),
             .t_string => |data| std.debug.print("\"{s}\"", .{data.getBufferConst()}),
             .t_number => |data| std.debug.print("{d}", .{data}),
-            .t_object => unreachable,
+            .t_object => |data| {
+                std.debug.print("{{", .{});
+                var iterator = data.iterator();
+                while (iterator.next()) |x| {
+                    std.debug.print("{s}, ", .{x.key_ptr.getBufferConst()});
+                    x.value_ptr.print();
+                }
+                std.debug.print("}}", .{});
+            },
             .t_array => |data| {
                 std.debug.print("[", .{});
                 for (data.items, 0..) |x, i| {
@@ -68,10 +79,10 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Item {
         return item;
     }
 
-    return ParseError.SyntaxError;
+    return Error.SyntaxError;
 }
 
-fn parseNextItem(allocator: std.mem.Allocator, lexer: *Lexer) ParseError!Item {
+fn parseNextItem(allocator: std.mem.Allocator, lexer: *Lexer) Error!Item {
     lexer.peek(allocator);
     switch (lexer.token.type) {
         .t_open_object => return try parseNextObject(allocator, lexer),
@@ -94,14 +105,14 @@ fn parseNextItem(allocator: std.mem.Allocator, lexer: *Lexer) ParseError!Item {
             lexer.next(allocator);
             return result;
         },
-        else => return ParseError.SyntaxError,
+        else => return Error.SyntaxError,
     }
 }
 
 fn parseNextObject(allocator: std.mem.Allocator, lexer: *Lexer) !Item {
     lexer.next(allocator);
     std.debug.assert(lexer.token.type == .t_open_object);
-    var items = std.AutoHashMap(String, Item).init(allocator);
+    var items = Item.Object.init(allocator);
     errdefer {
         var iterator = items.iterator();
         while (iterator.next()) |x| {
@@ -118,7 +129,7 @@ fn parseNextObject(allocator: std.mem.Allocator, lexer: *Lexer) !Item {
             return .{ .t_object = items };
         } else if (lexer.token.type == .t_comma) {
             if (items.count() == 0) {
-                return ParseError.SyntaxError;
+                return Error.SyntaxError;
             }
 
             lexer.next(allocator);
@@ -128,12 +139,12 @@ fn parseNextObject(allocator: std.mem.Allocator, lexer: *Lexer) !Item {
         errdefer key.deinit(allocator);
 
         if (key != .t_string) {
-            return ParseError.SyntaxError;
+            return Error.SyntaxError;
         }
 
         lexer.next(allocator);
         if (lexer.token.type != .t_colon) {
-            return ParseError.SyntaxError;
+            return Error.SyntaxError;
         }
 
         var value = try parseNextItem(allocator, lexer);
@@ -144,7 +155,7 @@ fn parseNextObject(allocator: std.mem.Allocator, lexer: *Lexer) !Item {
     }
 }
 
-const ParseError = error{ SyntaxError, OutOfMemory };
+pub const Error = error{ SyntaxError, OutOfMemory };
 
 fn parseNextArray(allocator: std.mem.Allocator, lexer: *Lexer) !Item {
     lexer.next(allocator);
@@ -162,7 +173,7 @@ fn parseNextArray(allocator: std.mem.Allocator, lexer: *Lexer) !Item {
             return .{ .t_array = items };
         } else if (lexer.token.type == .t_comma) {
             if (items.items.len == 0) {
-                return ParseError.SyntaxError;
+                return Error.SyntaxError;
             }
 
             lexer.next(allocator);
@@ -267,13 +278,13 @@ test "json parse: array2" {
 test "json parse: array3" {
     const buffer = "[\"sdfbjkbfbjdfbjdkshflkdsjflksdjflkndjklgfbdjkfdslkfhlkdsfjlkdsjflsdflkdslfkjlhsdf\", dsfsf]";
     const result = parse(std.testing.allocator, buffer);
-    try expect(result == ParseError.SyntaxError);
+    try expect(result == Error.SyntaxError);
 }
 
 test "json parse: array4" {
     const buffer = "[\"sdfsd\", dsfsf]";
     const result = parse(std.testing.allocator, buffer);
-    try expect(result == ParseError.SyntaxError);
+    try expect(result == Error.SyntaxError);
 }
 
 test "json parse: object" {
@@ -328,5 +339,5 @@ test "json parse: object2" {
     const buffer = "{\"key1\": \"sdfjbkhlisdfhjlihsfkljdshfkjldhsflkdjslkfhndfkjghndsklfhdfkljgbdlksfhjldskhf\",\"key2\": null, \"key3\": \"sdfdjkbfkjdshjkfdsjkfbdjksfbkjdsbfjkdsbfjksdbfjkdsbfjkbsdfjkbsdkjfbsdjkfbdsjkfbjkdsbfjksdbf\",}";
 
     const result = parse(std.testing.allocator, buffer);
-    try expect(result == ParseError.SyntaxError);
+    try expect(result == Error.SyntaxError);
 }

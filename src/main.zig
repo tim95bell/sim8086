@@ -9,13 +9,15 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(gpa);
     if (args.len <= 1) {
         std.debug.print("Subprogram command line argument missing\n", .{});
+        sim8086.cmd.printUsage();
+        haversine.cmd.printUsage();
         return;
     }
 
     if (std.mem.eql(u8, args[1], "sim8086")) {
         try sim8086.cmd.run(args[2..]);
     } else if (std.mem.eql(u8, args[1], "haversine")) {
-        try haversine.cmd.run(args[2..]);
+        try haversine.cmd.run(gpa, args[2..]);
     } else {
         std.debug.print("unknown subprogram: {s}\n", .{args[1]});
     }
