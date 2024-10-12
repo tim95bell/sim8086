@@ -1,5 +1,5 @@
 const std = @import("std");
-const Generator = @import("Generator.zig");
+const generator = @import("generator_rename.zig");
 
 fn printUsage() void {
     std.debug.print("generator [file path] [uniform/cluster] [random seed] [number of coordinate pairs to generate]\n", .{});
@@ -18,7 +18,7 @@ pub fn run(args: [][:0]u8) !void {
     };
     defer file.close();
 
-    const mode: Generator.Mode =
+    const mode: generator.Mode =
         if (std.mem.eql(u8, args[1], "uniform")) .uniform else if (std.mem.eql(u8, args[1], "cluster")) .cluster else {
         std.debug.print("Unknown mode \"{s}\", must be \"uniform\" or \"cluster\"\n", .{args[1]});
         printUsage();
@@ -37,5 +37,5 @@ pub fn run(args: [][:0]u8) !void {
         return;
     };
 
-    try Generator.generate(file.writer(), mode, random_seed, pair_count);
+    try generator.generate(file.writer(), mode, random_seed, pair_count);
 }

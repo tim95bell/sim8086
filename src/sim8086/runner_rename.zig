@@ -1,7 +1,7 @@
 const std = @import("std");
-const Simulator = @import("Simulator.zig");
+const simulator = @import("simulator_rename.zig");
 const Instruction = @import("Instruction.zig");
-const Decoder = @import("Decoder.zig");
+const decoder = @import("decoder_rename.zig");
 const ArrayListHelpers = @import("ArrayListHelpers.zig");
 const Context = @import("Context.zig");
 
@@ -48,7 +48,7 @@ fn printWithLabels(writer: std.fs.File.Writer, instruction: Instruction.Instruct
     if (maybe_jump_ip_inc8) |jump_ip_inc8| {
         const label_byte_index: usize = @as(usize, @intCast(@as(isize, @intCast(byte_index)) + jump_ip_inc8)) + instruction.size;
         const index: usize = ArrayListHelpers.findValueIndex(labels, label_byte_index).?;
-        try writer.print("{s} test_label{d}", .{Instruction.getInstructionTypeString(instruction.type), index});
+        try writer.print("{s} test_label{d}", .{ Instruction.getInstructionTypeString(instruction.type), index });
     } else {
         try print(writer, instruction);
     }
@@ -62,7 +62,7 @@ fn decodeAndPrintAll(allocator: std.mem.Allocator, writer: std.fs.File.Writer, c
     defer labels.deinit();
 
     while (context.register.named_word.ip < context.program_size) {
-        const instruction = Decoder.decode(context).?;
+        const instruction = decoder.decode(context).?;
         try instructions.append(instruction);
         context.register.named_word.ip += instruction.size;
 
@@ -216,7 +216,7 @@ fn getClocks(instruction: Instruction.Instruction) struct { u8, u8 } {
                             return .{ 16, getEAClocks(mem_a) };
                         },
                         .immediate => {
-                            return  .{ 17, getEAClocks(mem_a) };
+                            return .{ 17, getEAClocks(mem_a) };
                         },
                         else => unreachable,
                     }
@@ -264,17 +264,17 @@ fn getClocksString(instruction: Instruction.Instruction, clocks: *u64, buffer: [
     clocks.* += total;
 
     if (ea_clocks != 0) {
-        return std.fmt.bufPrint(buffer, "+{d} = {d} ({d} + {d}ea)", .{total, clocks.*, base_clocks, ea_clocks});
+        return std.fmt.bufPrint(buffer, "+{d} = {d} ({d} + {d}ea)", .{ total, clocks.*, base_clocks, ea_clocks });
     }
 
-    return std.fmt.bufPrint(buffer, "+{d} = {d}", .{total, clocks.*});
+    return std.fmt.bufPrint(buffer, "+{d} = {d}", .{ total, clocks.* });
 }
 
 fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context.Context, dump: bool, print_clocks: bool) !void {
     var clocks: u64 = 0;
     _ = try writer.print("\n", .{});
     while (context.register.named_word.ip < context.program_size) {
-        const instruction = Decoder.decode(context).?;
+        const instruction = decoder.decode(context).?;
         try print(writer, instruction);
         const flags_before = context.flags;
         const registers_before = context.register;
@@ -285,23 +285,23 @@ fn simulateAndPrintAll(writer: std.fs.File.Writer, context: *Context.Context, du
             _ = try writer.print(" Clocks: {s} |", .{try getClocksString(instruction, &clocks, &clocks_string_buffer)});
         }
 
-        Simulator.simulateInstruction(instruction, context);
+        simulator.simulateInstruction(instruction, context);
         try printRegistersThatChangedShort(writer, registers_before, context.register);
         if (flags_before != context.flags) {
-            var flags_before_buffer: [@typeInfo(Simulator.FlagBitIndex).Enum.fields.len]u8 = undefined;
-            const flags_before_string = Simulator.printFlags(flags_before, &flags_before_buffer);
-            var flags_after_buffer: [@typeInfo(Simulator.FlagBitIndex).Enum.fields.len]u8 = undefined;
-            const flags_after_string = Simulator.printFlags(context.flags, &flags_after_buffer);
-            _ = try writer.print(" flags:{s}->{s}", .{flags_before_string, flags_after_string});
+            var flags_before_buffer: [@typeInfo(simulator.FlagBitIndex).Enum.fields.len]u8 = undefined;
+            const flags_before_string = simulator.printFlags(flags_before, &flags_before_buffer);
+            var flags_after_buffer: [@typeInfo(simulator.FlagBitIndex).Enum.fields.len]u8 = undefined;
+            const flags_after_string = simulator.printFlags(context.flags, &flags_after_buffer);
+            _ = try writer.print(" flags:{s}->{s}", .{ flags_before_string, flags_after_string });
         }
         _ = try writer.print("\n", .{});
     }
     _ = try writer.print("\n", .{});
     try printRegisters(writer, context);
 
-    if (Simulator.hasAtLeastOneFlagSet(context.flags)) {
-        var flags_buffer: [@typeInfo(Simulator.FlagBitIndex).Enum.fields.len]u8 = undefined;
-        const flags = Simulator.printFlags(context.flags, &flags_buffer);
+    if (simulator.hasAtLeastOneFlagSet(context.flags)) {
+        var flags_buffer: [@typeInfo(simulator.FlagBitIndex).Enum.fields.len]u8 = undefined;
+        const flags = simulator.printFlags(context.flags, &flags_buffer);
         _ = try writer.print(";   flags: {s}\n", .{flags});
     }
 
@@ -360,43 +360,43 @@ fn printRegisters(writer: std.fs.File.Writer, context: *const Context.Context) !
 
 fn printRegistersThatChangedShort(writer: std.fs.File.Writer, registers_before: Context.Registers, registers: Context.Registers) !void {
     if (registers_before.named_word.ax != registers.named_word.ax) {
-        _ = try writer.print(" ax:0x{x}->0x{x}", .{registers_before.named_word.ax, registers.named_word.ax});
+        _ = try writer.print(" ax:0x{x}->0x{x}", .{ registers_before.named_word.ax, registers.named_word.ax });
     }
     if (registers_before.named_word.bx != registers.named_word.bx) {
-        _ = try writer.print(" bx:0x{x}->0x{x}", .{registers_before.named_word.bx, registers.named_word.bx});
+        _ = try writer.print(" bx:0x{x}->0x{x}", .{ registers_before.named_word.bx, registers.named_word.bx });
     }
     if (registers_before.named_word.cx != registers.named_word.cx) {
-        _ = try writer.print(" cx:0x{x}->0x{x}", .{registers_before.named_word.cx, registers.named_word.cx});
+        _ = try writer.print(" cx:0x{x}->0x{x}", .{ registers_before.named_word.cx, registers.named_word.cx });
     }
     if (registers_before.named_word.dx != registers.named_word.dx) {
-        _ = try writer.print(" dx:0x{x}->0x{x}", .{registers_before.named_word.dx, registers.named_word.dx});
+        _ = try writer.print(" dx:0x{x}->0x{x}", .{ registers_before.named_word.dx, registers.named_word.dx });
     }
     if (registers_before.named_word.sp != registers.named_word.sp) {
-        _ = try writer.print(" sp:0x{x}->0x{x}", .{registers_before.named_word.sp, registers.named_word.sp});
+        _ = try writer.print(" sp:0x{x}->0x{x}", .{ registers_before.named_word.sp, registers.named_word.sp });
     }
     if (registers_before.named_word.bp != registers.named_word.bp) {
-        _ = try writer.print(" bp:0x{x}->0x{x}", .{registers_before.named_word.bp, registers.named_word.bp});
+        _ = try writer.print(" bp:0x{x}->0x{x}", .{ registers_before.named_word.bp, registers.named_word.bp });
     }
     if (registers_before.named_word.si != registers.named_word.si) {
-        _ = try writer.print(" si:0x{x}->0x{x}", .{registers_before.named_word.si, registers.named_word.si});
+        _ = try writer.print(" si:0x{x}->0x{x}", .{ registers_before.named_word.si, registers.named_word.si });
     }
     if (registers_before.named_word.di != registers.named_word.di) {
-        _ = try writer.print(" di:0x{x}->0x{x}", .{registers_before.named_word.di, registers.named_word.di});
+        _ = try writer.print(" di:0x{x}->0x{x}", .{ registers_before.named_word.di, registers.named_word.di });
     }
     if (registers_before.named_word.ip != registers.named_word.ip) {
-        _ = try writer.print(" ip:0x{x}->0x{x}", .{registers_before.named_word.ip, registers.named_word.ip});
+        _ = try writer.print(" ip:0x{x}->0x{x}", .{ registers_before.named_word.ip, registers.named_word.ip });
     }
     if (registers_before.named_word.cs != registers.named_word.cs) {
-        _ = try writer.print(" cs:0x{x}->0x{x}", .{registers_before.named_word.cs, registers.named_word.cs});
+        _ = try writer.print(" cs:0x{x}->0x{x}", .{ registers_before.named_word.cs, registers.named_word.cs });
     }
     if (registers_before.named_word.es != registers.named_word.es) {
-        _ = try writer.print(" es:0x{x}->0x{x}", .{registers_before.named_word.es, registers.named_word.es});
+        _ = try writer.print(" es:0x{x}->0x{x}", .{ registers_before.named_word.es, registers.named_word.es });
     }
     if (registers_before.named_word.ss != registers.named_word.ss) {
-        _ = try writer.print(" ss:0x{x}->0x{x}", .{registers_before.named_word.ss, registers.named_word.ss});
+        _ = try writer.print(" ss:0x{x}->0x{x}", .{ registers_before.named_word.ss, registers.named_word.ss });
     }
     if (registers_before.named_word.ds != registers.named_word.ds) {
-        _ = try writer.print(" ds:0x{x}->0x{x}", .{registers_before.named_word.ds, registers.named_word.ds});
+        _ = try writer.print(" ds:0x{x}->0x{x}", .{ registers_before.named_word.ds, registers.named_word.ds });
     }
 }
 

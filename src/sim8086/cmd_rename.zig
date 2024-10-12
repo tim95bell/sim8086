@@ -1,5 +1,5 @@
 const std = @import("std");
-const Runner = @import("Runner.zig");
+const runner = @import("runner_rename.zig");
 
 pub fn run(args: [][:0]u8) !void {
     var file_name: []u8 = &.{};
@@ -28,7 +28,7 @@ pub fn run(args: [][:0]u8) !void {
 
     if (exec) {
         std.debug.assert(!decode);
-        try Runner.run(.{
+        try runner.run(.{
             .file_name = file_name,
             .action = .{
                 .exec = .{
@@ -39,7 +39,7 @@ pub fn run(args: [][:0]u8) !void {
         });
     } else {
         std.debug.assert(exec);
-        try Runner.run(.{
+        try runner.run(.{
             .file_name = file_name,
             .action = .decode,
         });
