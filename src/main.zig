@@ -6,15 +6,15 @@ const timer = @import("timer.zig");
 
 pub fn main() !void {
     std.debug.print("cpu frequency: {d}\n", .{timer.estimateCpuFrequency()});
-    const start_time = timer.time();
-    defer {
-        const duration = timer.time() - start_time;
-        const ns = timer.toNs(duration);
-        const s = timer.nsToS(ns);
-        std.debug.print("main time: {d}s ({d}ns)\n", .{ s, ns });
-    }
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = allocator.allocator();
+    try timer.init(gpa);
+    timer.start();
+    defer {
+        timer.end();
+        timer.print();
+        timer.deinit();
+    }
     const args = try std.process.argsAlloc(gpa);
     if (args.len <= 1) {
         std.debug.print("Subprogram command line argument missing\n", .{});
