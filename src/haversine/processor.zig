@@ -1,15 +1,45 @@
 const std = @import("std");
 const json = @import("../json.zig");
 const haversine_formula = @import("haversine_formula.zig");
+const timer = @import("..//timer.zig");
 
 pub const Error = error{InvalidInput};
 
 pub fn process(allocator: std.mem.Allocator, input_file: std.fs.File, optional_answers_file: ?std.fs.File) !void {
-    const input_file_data = try input_file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
-    defer allocator.free(input_file_data);
+    const start_time = timer.time();
+    var read_file_duration: u64 = undefined;
+    var parse_json_duration: u64 = undefined;
+    var process_duration: u64 = undefined;
+    var deinit_file_duration: u64 = undefined;
+    var deinit_json_duration: u64 = undefined;
+    defer {
+        const duration = timer.time() - start_time;
+        std.debug.print("haversine process time: {d}s ({d}ns)\n", .{ timer.toS(duration), timer.toNs(duration) });
+        std.debug.print("\tread file: {d}s ({d}ns) ({d}%)\n", .{ timer.toS(read_file_duration), timer.toNs(read_file_duration), timer.percentage(read_file_duration, duration) });
+        std.debug.print("\tparse json: {d}s ({d}ns) ({d}%)\n", .{ timer.toS(parse_json_duration), timer.toNs(parse_json_duration), timer.percentage(parse_json_duration, duration) });
+        std.debug.print("\tprocess: {d}s ({d}ns) ({d}%)\n", .{ timer.toS(process_duration), timer.toNs(process_duration), timer.percentage(process_duration, duration) });
+        std.debug.print("\tdeinit file: {d}s ({d}ns) ({d}%)\n", .{ timer.toS(deinit_file_duration), timer.toNs(deinit_file_duration), timer.percentage(deinit_file_duration, duration) });
+        std.debug.print("\tdeinit json: {d}s ({d}ns) ({d}%)\n", .{ timer.toS(deinit_json_duration), timer.toNs(deinit_json_duration), timer.percentage(deinit_json_duration, duration) });
+    }
+    const read_file_start_time = timer.time();
+    const input_file_data = try input_file.readToEndAlloc(allocator, 1024 * 1024 * 1024 * 1024);
+    read_file_duration = timer.time() - read_file_start_time;
+    defer {
+        const deinit_file_start_time = timer.time();
+        allocator.free(input_file_data);
+        deinit_file_duration = timer.time() - deinit_file_start_time;
+    }
 
+    const parse_json_start_time = timer.time();
     var json_data = try json.Parser.parse(allocator, input_file_data);
-    defer json_data.deinit(allocator);
+    parse_json_duration = timer.time() - parse_json_start_time;
+    defer {
+        const deinit_json_start_time = timer.time();
+        json_data.deinit(allocator);
+        deinit_json_duration = timer.time() - deinit_json_start_time;
+    }
+
+    const process_start_time = timer.time();
     if (json_data != .t_object) {
         return Error.InvalidInput;
     }
@@ -43,6 +73,7 @@ pub fn process(allocator: std.mem.Allocator, input_file: std.fs.File, optional_a
         std.debug.assert(bytes_read == 8);
         std.debug.print("\nValidation:\nReference sum: {d}\nDifference: {d}\n", .{ reference_average, average - reference_average });
     }
+    process_duration = timer.time() - process_start_time;
 }
 
 fn getObjectNumberForKey(object: json.Parser.Item.Object, key: []const u8) !f64 {

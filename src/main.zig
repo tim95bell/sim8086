@@ -2,8 +2,17 @@ const std = @import("std");
 const sim8086 = @import("sim8086.zig");
 const haversine = @import("haversine.zig");
 const json = @import("json.zig");
+const timer = @import("timer.zig");
 
 pub fn main() !void {
+    std.debug.print("cpu frequency: {d}\n", .{timer.estimateCpuFrequency()});
+    const start_time = timer.time();
+    defer {
+        const duration = timer.time() - start_time;
+        const ns = timer.toNs(duration);
+        const s = timer.nsToS(ns);
+        std.debug.print("main time: {d}s ({d}ns)\n", .{ s, ns });
+    }
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = allocator.allocator();
     const args = try std.process.argsAlloc(gpa);
