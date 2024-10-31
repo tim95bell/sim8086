@@ -5,23 +5,14 @@ const mach_time = @cImport({
 });
 
 const enable = ProfilerConfig.enable;
+const ProfileTag = if (enable) ProfilerConfig.ProfileTag else enum{};
+const profile_tag_count = @typeInfo(ProfileTag).Enum.fields.len;
+const getProfileTagName = if (enable) ProfilerConfig.getProfileTagName else void;
 
 const State = struct {
     // TODO(TB): will this memory always be zero initialized?
-    blocks: [ProfileTag.count]Block,
+    blocks: [profile_tag_count]Block,
     stack: std.ArrayList(Anchor),
-};
-
-pub const ProfileTag = enum {
-    root,
-    haversine_process,
-    read_file,
-    parse_json,
-    process,
-    deinit_json,
-    deinit_file,
-
-    const count = @typeInfo(ProfileTag).Enum.fields.len;
 };
 
 pub const Block = struct {
@@ -35,16 +26,6 @@ pub const Anchor = struct {
 };
 
 var state: if (enable) State else void = undefined;
-
-pub const profile_tag_to_name: [ProfileTag.count][]const u8 = .{
-    "total",
-    "haversine process",
-    "read file",
-    "parse json",
-    "process",
-    "deinit json",
-    "deinit file",
-};
 
 pub const ns_in_s = 1_000_000_000;
 
@@ -82,7 +63,7 @@ pub fn startBlock(tag: ProfileTag) void {
         }
     }
     const new_block = state.stack.addOne() catch {
-        std.debug.print("ERROR: Profiler failed to add block \"{s}\"\n", .{profile_tag_to_name[@intFromEnum(tag)]});
+        std.debug.print("ERROR: Profiler failed to add block \"{s}\"\n", .{getProfileTagName(tag)});
         return;
     };
     new_block.tag = tag;
@@ -113,13 +94,13 @@ pub fn print() void {
 
     const root_duration = state.blocks[0].duration;
     {
-        const name = profile_tag_to_name[0];
+        const name = getProfileTagName(@enumFromInt(0));
         const ns = toNs(root_duration);
         const s = nsToS(ns);
         std.debug.print("{s} time: {d}s ({d}ns)\n", .{name, s, ns});
     }
     for (1..state.blocks.len) |i| {
-        const name = profile_tag_to_name[i];
+        const name = getProfileTagName(@enumFromInt(i));
         const duration = state.blocks[i].duration;
         const ns = toNs(duration);
         const s = nsToS(ns);

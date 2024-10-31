@@ -6,6 +6,28 @@ const timer = @import("timer.zig");
 
 pub const ProfilerConfig = struct {
     pub const enable = true;
+
+    pub const ProfileTag = enum {
+        root,
+        haversine_process,
+        read_file,
+        parse_json,
+        process,
+        deinit_json,
+        deinit_file,
+    };
+
+    pub fn getProfileTagName(tag: ProfileTag) []const u8 {
+        return switch (tag) {
+            .root => "total",
+            .haversine_process => "haversine process",
+            .read_file => "read file",
+            .parse_json => "parse json",
+            .process => "process",
+            .deinit_json => "deinit json",
+            .deinit_file => "deinit file",
+        };
+    }
 };
 
 pub fn main() !void {
