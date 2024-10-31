@@ -4,6 +4,10 @@ const haversine = @import("haversine.zig");
 const json = @import("json.zig");
 const timer = @import("timer.zig");
 
+pub const ProfilerConfig = struct {
+    pub const enable = true;
+};
+
 pub fn main() !void {
     std.debug.print("cpu frequency: {d}\n", .{timer.estimateCpuFrequency()});
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};

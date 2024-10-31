@@ -1,7 +1,16 @@
 const std = @import("std");
+const ProfilerConfig = @import("root").ProfilerConfig;
 const mach_time = @cImport({
     @cInclude("mach/mach_time.h");
 });
+
+const enable = ProfilerConfig.enable;
+
+const State = struct {
+    // TODO(TB): will this memory always be zero initialized?
+    blocks: [ProfileTag.count]Block,
+    stack: std.ArrayList(Anchor),
+};
 
 pub const ProfileTag = enum {
     root,
@@ -25,6 +34,8 @@ pub const Anchor = struct {
     tag: ProfileTag,
 };
 
+var state: if (enable) State else void = undefined;
+
 pub const profile_tag_to_name: [ProfileTag.count][]const u8 = .{
     "total",
     "haversine process",
@@ -37,36 +48,40 @@ pub const profile_tag_to_name: [ProfileTag.count][]const u8 = .{
 
 pub const ns_in_s = 1_000_000_000;
 
-// TODO(TB): will this memory always be zero initialized?
-var blocks: [ProfileTag.count]Block = undefined;
-var stack: std.ArrayList(Anchor) = undefined;
-
 pub fn init(allocator: std.mem.Allocator) void {
-    stack = @TypeOf(stack).initCapacity(allocator, 32) catch {
-        std.debug.print("ERROR: Profiler failed to initialise\n", .{});
-        return;
-    };
+    if (comptime enable) {
+        state.stack = @TypeOf(state.stack).initCapacity(allocator, 32) catch {
+            std.debug.print("ERROR: Profiler failed to initialise\n", .{});
+            return;
+        };
+    }
 }
 
 pub fn deinit() void {
-    stack.deinit();
+    if (comptime enable) {
+        state.stack.deinit();
+    }
 }
 
 pub fn startBlock(tag: ProfileTag) void {
+    if (comptime !enable) {
+        return;
+    }
+
     if (comptime std.debug.runtime_safety) {
         if (tag == .root) {
-            if (stack.items.len == 0) {
+            if (state.stack.items.len == 0) {
                 // TODO(TB): do this with std.mem.eql
-                for (0..blocks.len) |i| {
-                    std.debug.assert(blocks[i].duration == 0);
-                    std.debug.assert(blocks[i].child_duration == 0);
+                for (0..state.blocks.len) |i| {
+                    std.debug.assert(state.blocks[i].duration == 0);
+                    std.debug.assert(state.blocks[i].child_duration == 0);
                 }
             }
         } else {
-            std.debug.assert(stack.items.len > 0);
+            std.debug.assert(state.stack.items.len > 0);
         }
     }
-    const new_block = stack.addOne() catch {
+    const new_block = state.stack.addOne() catch {
         std.debug.print("ERROR: Profiler failed to add block \"{s}\"\n", .{profile_tag_to_name[@intFromEnum(tag)]});
         return;
     };
@@ -75,29 +90,37 @@ pub fn startBlock(tag: ProfileTag) void {
 }
 
 pub fn endBlock() void {
-    std.debug.assert(stack.items.len > 0);
-    const anchor = stack.pop();
+    if (comptime !enable) {
+        return;
+    }
+
+    std.debug.assert(state.stack.items.len > 0);
+    const anchor = state.stack.pop();
     // if this was at the bottom of the stack, it must be root tag
-    std.debug.assert(stack.items.len > 0 or anchor.tag == .root);
+    std.debug.assert(state.stack.items.len > 0 or anchor.tag == .root);
     const duration = time() - anchor.start_time;
-    blocks[@intFromEnum(anchor.tag)].duration += duration;
-    if (stack.items.len > 0) {
-        const parent_anchor = stack.getLast();
-        blocks[@intFromEnum(parent_anchor.tag)].child_duration += duration;
+    state.blocks[@intFromEnum(anchor.tag)].duration += duration;
+    if (state.stack.items.len > 0) {
+        const parent_anchor = state.stack.getLast();
+        state.blocks[@intFromEnum(parent_anchor.tag)].child_duration += duration;
     }
 }
 
 pub fn print() void {
-    const root_duration = blocks[0].duration;
+    if (comptime !enable) {
+        return;
+    }
+
+    const root_duration = state.blocks[0].duration;
     {
         const name = profile_tag_to_name[0];
         const ns = toNs(root_duration);
         const s = nsToS(ns);
         std.debug.print("{s} time: {d}s ({d}ns)\n", .{name, s, ns});
     }
-    for (1..blocks.len) |i| {
+    for (1..state.blocks.len) |i| {
         const name = profile_tag_to_name[i];
-        const duration = blocks[i].duration;
+        const duration = state.blocks[i].duration;
         const ns = toNs(duration);
         const s = nsToS(ns);
         std.debug.print("{s} time: {d}s ({d}ns) ({d}%)\n", .{name, s, ns, percentage(duration, root_duration)});
