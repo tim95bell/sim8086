@@ -8,10 +8,10 @@ pub fn main() !void {
     std.debug.print("cpu frequency: {d}\n", .{timer.estimateCpuFrequency()});
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = allocator.allocator();
-    try timer.init(gpa);
-    timer.start();
+    timer.init(gpa);
+    timer.startBlock(.root);
     defer {
-        timer.end();
+        timer.endBlock();
         timer.print();
         timer.deinit();
     }

@@ -6,28 +6,28 @@ const timer = @import("../timer.zig");
 pub const Error = error{InvalidInput};
 
 pub fn process(allocator: std.mem.Allocator, input_file: std.fs.File, optional_answers_file: ?std.fs.File) !void {
-    timer.startBlock("haversine process");
+    timer.startBlock(.haversine_process);
     defer timer.endBlock();
-    timer.startBlock("read file");
+    timer.startBlock(.read_file);
     const input_file_data = try input_file.readToEndAlloc(allocator, 1024 * 1024 * 1024 * 1024);
     timer.endBlock();
     defer {
-        timer.startBlock("deinit file");
+        timer.startBlock(.deinit_file);
         defer timer.endBlock();
         allocator.free(input_file_data);
     }
 
-    timer.startBlock("parse json");
+    timer.startBlock(.parse_json);
     var json_data = try json.Parser.parse(allocator, input_file_data);
     timer.endBlock();
     defer {
-        timer.startBlock("deinit json");
+        timer.startBlock(.deinit_json);
         defer timer.endBlock();
         json_data.deinit(allocator);
     }
 
     {
-        timer.startBlock("process");
+        timer.startBlock(.process);
         defer timer.endBlock();
         if (json_data != .t_object) {
             return Error.InvalidInput;

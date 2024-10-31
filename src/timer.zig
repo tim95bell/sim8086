@@ -3,139 +3,105 @@ const mach_time = @cImport({
     @cInclude("mach/mach_time.h");
 });
 
-pub const ns_in_s = 1_000_000_000;
+pub const ProfileTag = enum {
+    root,
+    haversine_process,
+    read_file,
+    parse_json,
+    process,
+    deinit_json,
+    deinit_file,
+
+    const count = @typeInfo(ProfileTag).Enum.fields.len;
+};
 
 pub const Block = struct {
-    // name is not owned by Block
-    name: []const u8,
+    duration: u64,
+    child_duration: u64,
+};
+
+pub const Anchor = struct {
     start_time: u64,
-    end_time: u64,
-    children: std.ArrayList(@This()),
-
-    pub fn init(self: *Block, allocator: std.mem.Allocator) void {
-        self.name = "";
-        self.start_time = 0;
-        self.end_time = 0;
-        self.children = @TypeOf(self.children).init(allocator);
-    }
-
-    pub fn initWithNameAndNow(self: *Block, allocator: std.mem.Allocator, name: []const u8) void {
-        self.name = name;
-        self.end_time = 0;
-        self.children = @TypeOf(self.children).init(allocator);
-        self.start_time = time();
-    }
-
-    pub fn deinit(self: *Block) void {
-        for (self.children.items) |*child| {
-            child.deinit();
-        }
-        self.children.deinit();
-    }
-
-    pub fn start(self: *Block) void {
-        std.debug.assert(self.start_time == 0);
-        self.start_time = time();
-        std.debug.assert(self.start_time != 0);
-    }
-
-    pub fn end(self: *Block) void {
-        std.debug.assert(self.end_time == 0);
-        self.end_time = time();
-        std.debug.assert(self.end_time != 0);
-    }
-
-    pub fn print(self: *const Block) void {
-        std.debug.assert(self.start_time != 0);
-        std.debug.assert(self.end_time != 0);
-        std.debug.assert(self.name.len == 0);
-        const duration = self.end_time - self.start_time;
-        const ns = toNs(duration);
-        const s = nsToS(ns);
-        std.debug.print("profiling total time: {d}s ({d}ns)\n", .{s, ns});
-        self.printChildren(duration, 0);
-    }
-
-    fn printChildren(self: *const Block, duration: u64, nested: u8) void {
-        const children_nested = nested + 1;
-        for (self.children.items) |*child| {
-            child.printNested(duration, children_nested);
-        }
-    }
-
-    fn printNested(self: *const Block, parent_duration: u64, nested: u8) void {
-        std.debug.assert(self.end_time != 0);
-        for (0..nested) |_| {
-            std.debug.print("\t", .{});
-        }
-        const duration = self.end_time - self.start_time;
-        const ns = toNs(duration);
-        const s = nsToS(ns);
-        std.debug.print("{s}: {d}s ({d}ns) ({d}%)\n", .{self.name, s, ns, percentage(duration, parent_duration)});
-        self.printChildren(duration, nested);
-    }
+    tag: ProfileTag,
 };
 
-var root_block: Block = .{
-    // TODO(TB): don't need a name
-    .name = "",
-    .start_time = 0,
-    .end_time = 0,
-    .children = undefined,
+pub const profile_tag_to_name: [ProfileTag.count][]const u8 = .{
+    "total",
+    "haversine process",
+    "read file",
+    "parse json",
+    "process",
+    "deinit json",
+    "deinit file",
 };
 
-var blocks: std.ArrayList(*Block) = undefined;
+pub const ns_in_s = 1_000_000_000;
+
+// TODO(TB): will this memory always be zero initialized?
+var blocks: [ProfileTag.count]Block = undefined;
+var stack: std.ArrayList(Anchor) = undefined;
+
+pub fn init(allocator: std.mem.Allocator) void {
+    stack = @TypeOf(stack).initCapacity(allocator, 32) catch {
+        std.debug.print("ERROR: Profiler failed to initialise\n", .{});
+        return;
+    };
+}
 
 pub fn deinit() void {
-    blocks.deinit();
-    root_block.deinit();
+    stack.deinit();
 }
 
-pub fn init(allocator: std.mem.Allocator) !void {
-    std.debug.assert(root_block.start_time == 0);
-    std.debug.assert(root_block.children.items.len == 0);
-    std.debug.assert(blocks.items.len == 0);
-    blocks = @TypeOf(blocks).init(allocator);
-    const new_block: **Block = try blocks.addOne();
-    new_block.* = &root_block;
-    root_block.init(allocator);
-    std.debug.assert(blocks.items.len == 1);
-}
-
-pub fn start() void {
-    std.debug.assert(root_block.start_time == 0);
-    std.debug.assert(root_block.children.items.len == 0);
-    std.debug.assert(blocks.items.len == 1);
-    std.debug.assert(blocks.getLast() == &root_block);
-    root_block.start();
-    std.debug.assert(root_block.start_time != 0);
-}
-
-pub fn startBlock(name: []const u8) void {
-    std.debug.assert(blocks.items.len > 0);
-    var new_block: *Block = blocks.getLast().children.addOne() catch unreachable;
-    {
-        const new_block_in_blocks: **Block = blocks.addOne() catch unreachable;
-        new_block_in_blocks.* = new_block;
+pub fn startBlock(tag: ProfileTag) void {
+    if (comptime std.debug.runtime_safety) {
+        if (tag == .root) {
+            if (stack.items.len == 0) {
+                // TODO(TB): do this with std.mem.eql
+                for (0..blocks.len) |i| {
+                    std.debug.assert(blocks[i].duration == 0);
+                    std.debug.assert(blocks[i].child_duration == 0);
+                }
+            }
+        } else {
+            std.debug.assert(stack.items.len > 0);
+        }
     }
-    new_block.initWithNameAndNow(blocks.allocator, name);
+    const new_block = stack.addOne() catch {
+        std.debug.print("ERROR: Profiler failed to add block \"{s}\"\n", .{profile_tag_to_name[@intFromEnum(tag)]});
+        return;
+    };
+    new_block.tag = tag;
+    new_block.start_time = time();
 }
 
 pub fn endBlock() void {
-    std.debug.assert(blocks.items.len > 1);
-    blocks.getLast().end();
-    _ = blocks.pop();
-}
-
-pub fn end() void {
-    std.debug.assert(blocks.items.len == 1);
-    root_block.end();
-    _ = blocks.pop();
+    std.debug.assert(stack.items.len > 0);
+    const anchor = stack.pop();
+    // if this was at the bottom of the stack, it must be root tag
+    std.debug.assert(stack.items.len > 0 or anchor.tag == .root);
+    const duration = time() - anchor.start_time;
+    blocks[@intFromEnum(anchor.tag)].duration += duration;
+    if (stack.items.len > 0) {
+        const parent_anchor = stack.getLast();
+        blocks[@intFromEnum(parent_anchor.tag)].child_duration += duration;
+    }
 }
 
 pub fn print() void {
-    std.debug.assert(blocks.items.len == 0);
-    root_block.print();
+    const root_duration = blocks[0].duration;
+    {
+        const name = profile_tag_to_name[0];
+        const ns = toNs(root_duration);
+        const s = nsToS(ns);
+        std.debug.print("{s} time: {d}s ({d}ns)\n", .{name, s, ns});
+    }
+    for (1..blocks.len) |i| {
+        const name = profile_tag_to_name[i];
+        const duration = blocks[i].duration;
+        const ns = toNs(duration);
+        const s = nsToS(ns);
+        std.debug.print("{s} time: {d}s ({d}ns) ({d}%)\n", .{name, s, ns, percentage(duration, root_duration)});
+    }
 }
 
 pub fn percentage(a: u64, b: u64) f64 {
