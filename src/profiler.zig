@@ -3,7 +3,7 @@ const timer = @import("timer.zig");
 const ProfilerConfig = @import("root").ProfilerConfig;
 
 const enable = ProfilerConfig.enable;
-const ProfileTag = if (enable) ProfilerConfig.ProfileTag else enum{};
+const ProfileTag = if (enable) ProfilerConfig.ProfileTag else enum {};
 const profile_tag_count = @typeInfo(ProfileTag).Enum.fields.len;
 const getProfileTagName = if (enable) ProfilerConfig.getProfileTagName else void;
 
@@ -16,6 +16,7 @@ const State = struct {
 pub const Block = struct {
     duration: u64,
     child_duration: u64,
+    hit_count: u32,
 };
 
 pub const Anchor = struct {
@@ -52,6 +53,7 @@ pub fn startBlock(tag: ProfileTag) void {
                 for (0..state.blocks.len) |i| {
                     std.debug.assert(state.blocks[i].duration == 0);
                     std.debug.assert(state.blocks[i].child_duration == 0);
+                    std.debug.assert(state.blocks[i].hit_count == 0);
                 }
             }
         } else {
@@ -77,10 +79,21 @@ pub fn endBlock() void {
     std.debug.assert(state.stack.items.len > 0 or anchor.tag == .root);
     const duration = timer.time() - anchor.start_time;
     state.blocks[@intFromEnum(anchor.tag)].duration += duration;
+    state.blocks[@intFromEnum(anchor.tag)].hit_count += 1;
     if (state.stack.items.len > 0) {
         const parent_anchor = state.stack.getLast();
         state.blocks[@intFromEnum(parent_anchor.tag)].child_duration += duration;
     }
+}
+
+fn bufPrintPercentage(buffer: *[27]u8, duration: u64, child_duration: u64, root_duration: u64) []u8 {
+    std.debug.assert(duration <= root_duration);
+    std.debug.assert(child_duration <= duration);
+
+    return if (child_duration == 0)
+        std.fmt.bufPrint(buffer, "{d:.2}%", .{timer.percentage(duration, root_duration)}) catch unreachable
+    else
+        std.fmt.bufPrint(buffer, "{d:.2}%, {d:.2}% w/children", .{ timer.percentage(duration - child_duration, root_duration), timer.percentage(duration, root_duration) }) catch unreachable;
 }
 
 pub fn print() void {
@@ -90,16 +103,14 @@ pub fn print() void {
 
     const root_duration = state.blocks[0].duration;
     {
-        const name = getProfileTagName(@enumFromInt(0));
-        const ns = timer.toNs(root_duration);
-        const s = timer.nsToS(ns);
-        std.debug.print("{s} time: {d}s ({d}ns)\n", .{name, s, ns});
+        const ms = timer.toMs(root_duration);
+        std.debug.print("Total time: {d:.4}ms (timer freq {d})\n", .{ ms, root_duration });
     }
     for (1..state.blocks.len) |i| {
         const name = getProfileTagName(@enumFromInt(i));
         const duration = state.blocks[i].duration;
-        const ns = timer.toNs(duration);
-        const s = timer.nsToS(ns);
-        std.debug.print("{s} time: {d}s ({d}ns) ({d}%)\n", .{name, s, ns, timer.percentage(duration, root_duration)});
+        const hit_count = state.blocks[i].hit_count;
+        var buffer: [27]u8 = undefined;
+        std.debug.print("\t{s}[{d}]: {d} ({s})\n", .{ name, hit_count, duration, bufPrintPercentage(&buffer, duration, state.blocks[i].child_duration, root_duration) });
     }
 }

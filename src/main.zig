@@ -16,6 +16,7 @@ pub const ProfilerConfig = struct {
         process,
         deinit_json,
         deinit_file,
+        parse_json_pairs_loop,
     };
 
     pub fn getProfileTagName(tag: ProfileTag) []const u8 {
@@ -27,6 +28,7 @@ pub const ProfilerConfig = struct {
             .process => "process",
             .deinit_json => "deinit json",
             .deinit_file => "deinit file",
+            .parse_json_pairs_loop => "parse json pairs loop",
         };
     }
 };

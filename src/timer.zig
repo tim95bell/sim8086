@@ -4,6 +4,7 @@ const mach_time = @cImport({
 });
 
 pub const ns_in_s = 1_000_000_000;
+pub const ns_in_ms = 1_000_000;
 
 pub fn percentage(a: u64, b: u64) f64 {
     return (@as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(b))) * 100;
@@ -13,6 +14,10 @@ pub fn toNsRatio() f64 {
     var info: mach_time.mach_timebase_info_data_t = undefined;
     _ = mach_time.mach_timebase_info(&info);
     return @as(f64, @floatFromInt(info.numer)) / @as(f64, @floatFromInt(info.denom));
+}
+
+pub fn toMsRatio() f64 {
+    return toNsRatio() / ns_in_ms;
 }
 
 pub fn toSRatio() f64 {
@@ -25,6 +30,10 @@ pub fn time() u64 {
 
 pub fn toNs(x: u64) f64 {
     return @as(f64, @floatFromInt(x)) * toNsRatio();
+}
+
+pub fn toMs(x: u64) f64 {
+    return @as(f64, @floatFromInt(x)) * toMsRatio();
 }
 
 pub fn nsToS(x: f64) f64 {

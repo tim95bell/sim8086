@@ -42,6 +42,8 @@ pub fn process(allocator: std.mem.Allocator, input_file: std.fs.File, optional_a
         var total: f64 = 0;
         const pair_count = pairs.t_array.items.len;
         for (pairs.t_array.items) |pair| {
+            profiler.startBlock(.parse_json_pairs_loop);
+            defer profiler.endBlock();
             const pair_object = if (pair == .t_object) pair.t_object else return Error.InvalidInput;
 
             const x0 = try getObjectNumberForKey(pair_object, "x0");
