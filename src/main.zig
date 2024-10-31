@@ -3,6 +3,7 @@ const sim8086 = @import("sim8086.zig");
 const haversine = @import("haversine.zig");
 const json = @import("json.zig");
 const timer = @import("timer.zig");
+const profiler = @import("profiler.zig");
 
 pub const ProfilerConfig = struct {
     pub const enable = true;
@@ -34,12 +35,12 @@ pub fn main() !void {
     std.debug.print("cpu frequency: {d}\n", .{timer.estimateCpuFrequency()});
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
     const gpa = allocator.allocator();
-    timer.init(gpa);
-    timer.startBlock(.root);
+    profiler.init(gpa);
+    profiler.startBlock(.root);
     defer {
-        timer.endBlock();
-        timer.print();
-        timer.deinit();
+        profiler.endBlock();
+        profiler.print();
+        profiler.deinit();
     }
     const args = try std.process.argsAlloc(gpa);
     if (args.len <= 1) {

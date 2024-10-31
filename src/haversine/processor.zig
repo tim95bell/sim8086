@@ -1,34 +1,34 @@
 const std = @import("std");
 const json = @import("../json.zig");
 const haversine_formula = @import("haversine_formula.zig");
-const timer = @import("../timer.zig");
+const profiler = @import("../profiler.zig");
 
 pub const Error = error{InvalidInput};
 
 pub fn process(allocator: std.mem.Allocator, input_file: std.fs.File, optional_answers_file: ?std.fs.File) !void {
-    timer.startBlock(.haversine_process);
-    defer timer.endBlock();
-    timer.startBlock(.read_file);
+    profiler.startBlock(.haversine_process);
+    defer profiler.endBlock();
+    profiler.startBlock(.read_file);
     const input_file_data = try input_file.readToEndAlloc(allocator, 1024 * 1024 * 1024 * 1024);
-    timer.endBlock();
+    profiler.endBlock();
     defer {
-        timer.startBlock(.deinit_file);
-        defer timer.endBlock();
+        profiler.startBlock(.deinit_file);
+        defer profiler.endBlock();
         allocator.free(input_file_data);
     }
 
-    timer.startBlock(.parse_json);
+    profiler.startBlock(.parse_json);
     var json_data = try json.Parser.parse(allocator, input_file_data);
-    timer.endBlock();
+    profiler.endBlock();
     defer {
-        timer.startBlock(.deinit_json);
-        defer timer.endBlock();
+        profiler.startBlock(.deinit_json);
+        defer profiler.endBlock();
         json_data.deinit(allocator);
     }
 
     {
-        timer.startBlock(.process);
-        defer timer.endBlock();
+        profiler.startBlock(.process);
+        defer profiler.endBlock();
         if (json_data != .t_object) {
             return Error.InvalidInput;
         }
